@@ -1,31 +1,13 @@
-import { useEffect, useState } from "react";
-import { io } from "socket.io-client";
-
-const socket = io("http://localhost:3001");
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Home from "./components/HomePage/HomePage";
+import Lobby from "./components/Lobby/Lobby";
 
 function App() {
-  const [status, setStatus] = useState("Connexion...");
-
-  useEffect(() => {
-    socket.on("connect", () => {
-      setStatus("🟢 Connecté au serveur");
-    });
-
-    socket.on("connected", (data) => {
-      console.log("Socket ID :", data.socketId);
-    });
-
-    return () => {
-      socket.off("connect");
-      socket.off("connected");
-    };
-  }, []);
-
   return (
-    <div style={{ padding: 40 }}>
-      <h1>Blindtest 🎵</h1>
-      <p>{status}</p>
-    </div>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/lobby" element={<Lobby />} />
+      </Routes>
   );
 }
 
