@@ -24,10 +24,7 @@ function generateRoomCode() {
 
 function log(type, message, data = null) {
   const time = new Date().toISOString();
-  console.log(
-    `[${time}] [${type}] ${message}`,
-    data ? data : ""
-  );
+  console.log(`[${time}] [${type}] ${message}`, data ? data : "");
 }
 
 function validatePlayerName(name) {
@@ -40,86 +37,90 @@ function validatePlayerName(name) {
 io.on("connection", (socket) => {
   console.log("🟢 Nouveau client connecté :", socket.id);
 
-  socket.on("join_room", ({ roomCode, playerName }) => {
-  const room = rooms[roomCode];
+  socket.on("join_room", ({ roomName, playerName }) => {
+    const room = rooms[roomName];
 
-  if (!room) {
-    socket.emit("error", "Room introuvable");
-    return;
-  }
+    console.log(roomName);
+    console.log(playerName);
+    console.log(room);
 
-  room.players[socket.id] = playerName;
-  socket.join(roomCode);
+    if (!room) {
+      socket.emit("error", "Room introuvable");
+      return;
+    }
 
-  io.to(roomCode).emit("room_updated", {
-    players: room.players,
+    room.players[socket.id] = playerName;
+    socket.join(roomName);
+
+    io.to(roomName).emit("room_updated", {
+      players: room.players,
+    });
+
+    console.log(`👤 ${playerName} a rejoint ${roomName}`);
+    console.log(`${room.players[socket.id]}`);
   });
 
-  console.log(`👤 ${playerName} a rejoint ${roomCode}`);
-});
+  socket.on("disconnect", () => {
+    for (const roomCode in rooms) {
+      const room = rooms[roomCode];
 
-socket.on("disconnect", () => {
-  for (const roomCode in rooms) {
-    const room = rooms[roomCode];
+      if (room.players[socket.id]) {
+        delete room.players[socket.id];
 
-    if (room.players[socket.id]) {
-      delete room.players[socket.id];
+        io.to(roomCode).emit("room_updated", {
+          players: room.players,
+        });
 
-      io.to(roomCode).emit("room_updated", {
-        players: room.players,
-      });
-
-      if (Object.keys(room.players).length === 0) {
-        delete rooms[roomCode];
-        console.log(`❌ Room supprimée : ${roomCode}`);
+        if (Object.keys(room.players).length === 0) {
+          delete rooms[roomCode];
+          console.log(`❌ Room supprimée : ${roomCode}`);
+        }
       }
     }
-  }
-});
+  });
 
-socket.on("create_room", ({ playerName }) => {
-  log("INFO", "Demande création de room", { socketId: socket.id });
+  socket.on("create_room", ({ playerName }) => {
+    log("INFO", "Demande création de room", { socketId: socket.id });
 
-  const errorCode = validatePlayerName(playerName);
+    const errorCode = validatePlayerName(playerName);
 
-  if (errorCode) {
-    log("WARN", "Pseudo invalide", { playerName, errorCode });
+    if (errorCode) {
+      log("WARN", "Pseudo invalide", { playerName, errorCode });
+
+      socket.emit("create_room_response", {
+        success: false,
+        error: {
+          code: errorCode,
+          message: "Pseudo invalide (3 à 15 caractères)",
+        },
+      });
+      return;
+    }
+
+    const roomCode = generateRoomCode();
+
+    rooms[roomCode] = {
+      players: {
+        [socket.id]: playerName,
+      },
+      createdAt: Date.now(),
+    };
+
+    socket.join(roomCode);
+
+    log("SUCCESS", "Room créée", {
+      roomCode,
+      host: playerName,
+    });
 
     socket.emit("create_room_response", {
-      success: false,
-      error: {
-        code: errorCode,
-        message: "Pseudo invalide (3 à 15 caractères)",
+      success: true,
+      data: {
+        roomCode,
+        players: rooms[roomCode].players,
       },
     });
-    return;
-  }
-
-  const roomCode = generateRoomCode();
-
-  rooms[roomCode] = {
-    players: {
-      [socket.id]: playerName,
-    },
-    createdAt: Date.now(),
-  };
-
-  socket.join(roomCode);
-
-  log("SUCCESS", "Room créée", {
-    roomCode,
-    host: playerName,
   });
-
-  socket.emit("create_room_response", {
-    success: true,
-    data: {
-      roomCode,
-      players: rooms[roomCode].players,
-    },
-  });
-});
-
 
   socket.emit("connected", { socketId: socket.id });
 
