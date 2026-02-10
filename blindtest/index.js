@@ -45,15 +45,41 @@ io.on("connection", (socket) => {
     console.log(room);
 
     if (!room) {
-      socket.emit("error", "Room introuvable");
+      socket.emit("join_room_response", {
+        success: false,
+        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
+      });
       return;
     }
 
+    const errorCode = validatePlayerName(playerName);
+    if (errorCode) {
+      socket.emit("join_room_response", {
+        success: false,
+        error: {
+          code: errorCode,
+          message: "Pseudo invalide (3 à 15 caractères)",
+        },
+      });
+      return;
+    }
+
+    // Enregistre le joueur sous son socket id (conserve les autres joueurs)
     room.players[socket.id] = playerName;
     socket.join(roomName);
 
+    // Informe tous les clients dans la room de la mise à jour
     io.to(roomName).emit("room_updated", {
       players: room.players,
+    });
+
+    // Répond au client qui vient de rejoindre pour qu'il puisse naviguer/mettre à jour son état
+    socket.emit("join_room_response", {
+      success: true,
+      data: {
+        roomCode: roomName,
+        players: room.players,
+      },
     });
 
     console.log(`👤 ${playerName} a rejoint ${roomName}`);
@@ -123,10 +149,6 @@ io.on("connection", (socket) => {
   });
 
   socket.emit("connected", { socketId: socket.id });
-
-  socket.on("disconnect", () => {
-    console.log("🔴 Client déconnecté :", socket.id);
-  });
 });
 
 server.listen(3001, () => {
