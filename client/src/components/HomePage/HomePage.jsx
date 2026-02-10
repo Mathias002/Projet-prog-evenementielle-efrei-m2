@@ -1,25 +1,44 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import './Homepage.css';
+import { useState } from "react";
+import { socket } from "../../socket";
+import { useNavigate } from "react-router-dom";
 
-export const Homepage = () => {
+export default function Home() {
+  const [playerName, setPlayerName] = useState("");
+  const [error, setError] = useState(null);
   const navigate = useNavigate();
 
-  const handleJoin = () => {
-    // Génère un ID aléatoire simple pour le lobby (ex: "lobby-xyz123")
-    const randomLobbyId = Math.random().toString(36).substring(2, 9);
-    navigate(`/lobby/${randomLobbyId}`);
+  const createRoom = () => {
+    setError(null);
+    socket.emit("create_room", { playerName });
   };
 
+  socket.off("create_room_response").on(
+    "create_room_response",
+    (response) => {
+      if (!response.success) {
+        setError(response.error.message);
+        return;
+      }
+
+      navigate("/lobby", {
+        state: response.data,
+      });
+    }
+  );
+
   return (
-    <div className="homepage-container">
-      <h1 className="game-title">Blind Test Party</h1>
-      <div className="join-section">
-        <p>Bienvenue ! Rejoignez le salon pour commencer à jouer.</p>
-        <button className="btn-primary join-btn" onClick={handleJoin}>
-          Rejoindre le Lobby
-        </button>
-      </div>
+    <div>
+      <h1>Créer une room</h1>
+
+      <input
+        placeholder="Ton pseudo"
+        value={playerName}
+        onChange={(e) => setPlayerName(e.target.value)}
+      />
+
+      <button onClick={createRoom}>Créer</button>
+
+      {error && <p style={{ color: "red" }}>{error}</p>}
     </div>
   );
-};
+}
