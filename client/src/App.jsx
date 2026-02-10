@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { Lobby } from "./components/Lobby/Lobby";
+import { Homepage } from "./components/HomePage/HomePage";
 
 const socket = io("http://localhost:3001");
 
@@ -22,9 +25,12 @@ function App() {
   }, []);
 
   return (
-    <div style={{ padding: 40 }}>
-      <h1>Blindtest 🎵</h1>
-      <p>{status}</p>
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <Routes>
+        <Route path="/" element={<Navigate to="/home" replace />} />
+        <Route path="/home" element={<Homepage />} />
+        <Route path="/lobby/:lobbyId" element={<Lobby socket={socket} />} />
+      </Routes>
     </div>
   );
 }

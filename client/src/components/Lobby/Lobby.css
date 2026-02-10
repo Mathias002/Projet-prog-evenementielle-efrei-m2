@@ -1,0 +1,142 @@
+/* Conteneur global qui prend tout l'écran */
+.lobby-container {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  background-color: #f0f2f5;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Zone principale à gauche */
+.main-area {
+  flex: 1; /* Prend tout l'espace restant */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  padding: 5rem 2rem 2rem 2rem;
+}
+
+.game-title {
+  font-size: 3rem;
+  color: #2c3e50;
+  margin-bottom: 2rem;
+}
+
+/* Boutons */
+.btn-primary {
+  padding: 15px 30px;
+  font-size: 1.2rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    transform 0.2s,
+    background-color 0.2s;
+  font-weight: bold;
+}
+
+.join-btn {
+  background-color: #3498db;
+  color: white;
+}
+
+.join-btn:hover {
+  background-color: #2980b9;
+}
+
+.ready-btn {
+  background-color: #27ae60;
+  color: white;
+  margin-bottom: 2rem;
+}
+
+.ready-btn.is-ready {
+  background-color: #ae2727; /* Vert quand prêt */
+  transform: scale(1.05);
+}
+
+/* Liste des statuts au centre */
+.ready-status-list ul {
+  list-style: none;
+  padding: 0;
+  text-align: left;
+}
+
+.ready-status-list li {
+  margin: 10px 0;
+  font-size: 1.1rem;
+}
+
+.status-ready {
+  color: #27ae60;
+  font-weight: bold;
+}
+.status-waiting {
+  color: #7f8c8d;
+  font-style: italic;
+}
+
+/* --- Barre Latérale Droite --- */
+.sidebar-right {
+  width: 300px; /* Largeur fixe pour la sidebar */
+  background-color: #ffffff;
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  overflow-y: auto; /* Scroll si trop de joueurs */
+}
+
+.sidebar-header {
+  border-bottom: 2px solid #ecf0f1;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+}
+
+.participants-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.participant-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #f8f9fa;
+  padding: 10px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  border-left: 4px solid transparent;
+}
+
+.participant-card.current-user {
+  border-left-color: #3498db; /* Marqueur bleu pour soi-même */
+  background-color: #ebf5fb;
+}
+
+.participant-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.participant-name {
+  font-weight: 600;
+  color: #34495e;
+}
+
+.participant-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.participant-score {
+  font-weight: bold;
+  color: #e67e22; /* Orange pour le score */
+  font-size: 1.1rem;
+}
