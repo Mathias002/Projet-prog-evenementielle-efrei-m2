@@ -76,11 +76,14 @@ io.on("connection", (socket) => {
 
     // Enregistre le joueur sous son socket id (conserve les autres joueurs)
     room.players[socket.id] = playerName;
+    // Initialise l'état prêt à false pour le nouveau joueur
+    room.readyPlayers[socket.id] = false;
     socket.join(roomName);
 
     // Informe tous les clients dans la room de la mise à jour
     io.to(roomName).emit("room_updated", {
       players: room.players,
+      readyPlayers: room.readyPlayers,
     });
 
     // Répond au client qui vient de rejoindre pour qu'il puisse naviguer/mettre à jour son état
@@ -89,10 +92,89 @@ io.on("connection", (socket) => {
       data: {
         roomCode: roomName,
         players: room.players,
+        readyPlayers: room.readyPlayers,
       },
     });
 
     console.log(`👤 ${playerName} a rejoint ${roomName}`);
+  });
+
+  // ✨ NOUVEAU: Gérer l'état "prêt" d'un joueur
+  socket.on("toggle_ready", ({ roomCode }) => {
+    const room = rooms[roomCode];
+
+    if (!room) {
+      socket.emit("toggle_ready_response", {
+        success: false,
+        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
+      });
+      return;
+    }
+
+    if (!room.players[socket.id]) {
+      socket.emit("toggle_ready_response", {
+        success: false,
+        error: { code: "NOT_IN_ROOM", message: "Vous n'êtes pas dans cette room" },
+      });
+      return;
+    }
+
+    // Toggle l'état prêt du joueur
+    room.readyPlayers[socket.id] = !room.readyPlayers[socket.id];
+
+    const playerName = room.players[socket.id];
+    const isReady = room.readyPlayers[socket.id];
+
+    log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, { roomCode });
+
+    // Envoie la mise à jour à tous les joueurs de la room
+    io.to(roomCode).emit("room_updated", {
+      players: room.players,
+      readyPlayers: room.readyPlayers,
+    });
+
+    socket.emit("toggle_ready_response", {
+      success: true,
+      data: { isReady },
+    });
+  });
+
+  // ✨ NOUVEAU: Lancer la partie (uniquement si tous sont prêts)
+  socket.on("start_game", ({ roomCode }) => {
+    const room = rooms[roomCode];
+
+    if (!room) {
+      socket.emit("start_game_response", {
+        success: false,
+        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
+      });
+      return;
+    }
+
+    // Vérifie que tous les joueurs sont prêts
+    const allPlayers = Object.keys(room.players);
+    const allReady = allPlayers.every(
+      (socketId) => room.readyPlayers[socketId] === true
+    );
+
+    if (!allReady) {
+      socket.emit("start_game_response", {
+        success: false,
+        error: {
+          code: "NOT_ALL_READY",
+          message: "Tous les joueurs doivent être prêts",
+        },
+      });
+      return;
+    }
+
+    log("SUCCESS", "Lancement de la partie", { roomCode });
+
+    // Informe tous les joueurs que la partie commence
+    io.to(roomCode).emit("game_started", {
+      roomCode,
+      players: room.players,
+    });
   });
 
   socket.on("disconnect", () => {
@@ -100,11 +182,16 @@ io.on("connection", (socket) => {
       const room = rooms[roomCode];
 
       if (room.players[socket.id]) {
+        const playerName = room.players[socket.id];
         delete room.players[socket.id];
+        delete room.readyPlayers[socket.id];
 
         io.to(roomCode).emit("room_updated", {
           players: room.players,
+          readyPlayers: room.readyPlayers,
         });
+
+        log("INFO", `${playerName} a quitté ${roomCode}`);
 
         if (Object.keys(room.players).length === 0) {
           delete rooms[roomCode];
@@ -138,6 +225,9 @@ io.on("connection", (socket) => {
       players: {
         [socket.id]: playerName,
       },
+      readyPlayers: {
+        [socket.id]: false, // Le créateur n'est pas prêt par défaut
+      },
       createdAt: Date.now(),
       scores: {},
       currentMusic: null,
@@ -156,6 +246,7 @@ io.on("connection", (socket) => {
       data: {
         roomCode,
         players: rooms[roomCode].players,
+        readyPlayers: rooms[roomCode].readyPlayers,
       },
     });
   });
