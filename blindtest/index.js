@@ -52,7 +52,8 @@ io.on("connection", (socket) => {
   console.log("🟢 Nouveau client connecté :", socket.id);
 
   socket.on("join_room", ({ roomName, playerName }) => {
-    const room = rooms[roomName];
+    const upperRoomCode = roomName.toUpperCase();
+    const room = rooms[upperRoomCode];
 
     if (!room) {
       socket.emit("join_room_response", {
@@ -76,12 +77,14 @@ io.on("connection", (socket) => {
 
     // Enregistre le joueur sous son socket id (conserve les autres joueurs)
     room.players[socket.id] = playerName;
+    if (!room.readyPlayers) room.readyPlayers = {}; // Sécurité
     // Initialise l'état prêt à false pour le nouveau joueur
     room.readyPlayers[socket.id] = false;
-    socket.join(roomName);
+    socket.join(upperRoomCode);
 
     // Informe tous les clients dans la room de la mise à jour
-    io.to(roomName).emit("room_updated", {
+    io.to(upperRoomCode).emit("room_updated", {
+      hostId: room.hostId,
       players: room.players,
       readyPlayers: room.readyPlayers,
     });
@@ -90,18 +93,20 @@ io.on("connection", (socket) => {
     socket.emit("join_room_response", {
       success: true,
       data: {
-        roomCode: roomName,
+        roomCode: upperRoomCode,
+        hostId: room.hostId,
         players: room.players,
         readyPlayers: room.readyPlayers,
       },
     });
 
-    console.log(`👤 ${playerName} a rejoint ${roomName}`);
+    console.log(`👤 ${playerName} a rejoint ${upperRoomCode}`);
   });
 
   // ✨ NOUVEAU: Gérer l'état "prêt" d'un joueur
   socket.on("toggle_ready", ({ roomCode }) => {
-    const room = rooms[roomCode];
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
 
     if (!room) {
       socket.emit("toggle_ready_response", {
@@ -122,6 +127,7 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (!room.readyPlayers) room.readyPlayers = {}; // Sécurité
     // Toggle l'état prêt du joueur
     room.readyPlayers[socket.id] = !room.readyPlayers[socket.id];
 
@@ -129,11 +135,12 @@ io.on("connection", (socket) => {
     const isReady = room.readyPlayers[socket.id];
 
     log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, {
-      roomCode,
+      roomCode: upperRoomCode,
     });
 
     // Envoie la mise à jour à tous les joueurs de la room
-    io.to(roomCode).emit("room_updated", {
+    io.to(upperRoomCode).emit("room_updated", {
+      hostId: room.hostId,
       players: room.players,
       readyPlayers: room.readyPlayers,
     });
@@ -146,7 +153,8 @@ io.on("connection", (socket) => {
 
   // ✨ NOUVEAU: Lancer la partie (uniquement si tous sont prêts)
   socket.on("start_game", ({ roomCode }) => {
-    const room = rooms[roomCode];
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
 
     if (!room) {
       socket.emit("start_game_response", {
@@ -173,11 +181,11 @@ io.on("connection", (socket) => {
       return;
     }
 
-    log("SUCCESS", "Lancement de la partie", { roomCode });
+    log("SUCCESS", "Lancement de la partie", { roomCode: upperRoomCode });
 
     // Informe tous les joueurs que la partie commence
-    io.to(roomCode).emit("game_started", {
-      roomCode,
+    io.to(upperRoomCode).emit("game_started", {
+      roomCode: upperRoomCode,
       players: room.players,
     });
   });
@@ -192,6 +200,7 @@ io.on("connection", (socket) => {
         delete room.readyPlayers[socket.id];
 
         io.to(roomCode).emit("room_updated", {
+          hostId: room.hostId,
           players: room.players,
           readyPlayers: room.readyPlayers,
         });
@@ -227,6 +236,7 @@ io.on("connection", (socket) => {
     const roomCode = generateRoomCode();
 
     rooms[roomCode] = {
+      hostId: socket.id,
       players: {
         [socket.id]: playerName,
       },
@@ -250,6 +260,7 @@ io.on("connection", (socket) => {
       success: true,
       data: {
         roomCode,
+        hostId: socket.id,
         players: rooms[roomCode].players,
         readyPlayers: rooms[roomCode].readyPlayers,
       },
@@ -260,13 +271,14 @@ io.on("connection", (socket) => {
 
   // Lancer une séquence de 10 musiques (événement de démarrage du jeu)
   socket.on("blindtest_game_start", async ({ roomCode }) => {
-    if (!roomCode || !rooms[roomCode]) {
+    const upperRoomCode = roomCode ? roomCode.toUpperCase() : null;
+    if (!upperRoomCode || !rooms[upperRoomCode]) {
       socket.emit("blindtest_error", { error: "Room not found" });
       return;
     }
     const audioFiles = getAudioFiles();
     if (audioFiles.length < 10) {
-      io.to(roomCode).emit("blindtest_error", {
+      io.to(upperRoomCode).emit("blindtest_error", {
         error: "Not enough audio files (need at least 10)",
       });
       return;
@@ -276,17 +288,17 @@ io.on("connection", (socket) => {
     const shuffled = audioFiles.sort(() => 0.5 - Math.random());
     const sequence = shuffled.slice(0, 10);
 
-    rooms[roomCode].blindtestSequence = sequence;
-    rooms[roomCode].blindtestIndex = 0;
-    rooms[roomCode].scores = {};
-    rooms[roomCode].answers = {}; // Pour stocker les réponses des joueurs à chaque musique
+    rooms[upperRoomCode].blindtestSequence = sequence;
+    rooms[upperRoomCode].blindtestIndex = 0;
+    rooms[upperRoomCode].scores = {};
+    rooms[upperRoomCode].answers = {}; // Pour stocker les réponses des joueurs à chaque musique
 
     // Fonction pour lancer chaque musique et attendre les réponses
     const launchMusic = async (index) => {
       if (index >= sequence.length) {
         // Fin du jeu
-        io.to(roomCode).emit("blindtest_game_end", {
-          scores: rooms[roomCode].scores,
+        io.to(upperRoomCode).emit("blindtest_game_end", {
+          scores: rooms[upperRoomCode].scores,
         });
         return;
       }
@@ -294,56 +306,38 @@ io.on("connection", (socket) => {
       const chosenFile = sequence[index];
       const musicId = generateMusicId();
 
-      rooms[roomCode].currentMusic = {
+      rooms[upperRoomCode].currentMusic = {
         id: musicId,
         filename: chosenFile,
       };
-      rooms[roomCode].musicStartTime = Date.now();
-      rooms[roomCode].answers = {}; // Reset les réponses pour cette musique
+      rooms[upperRoomCode].musicStartTime = Date.now();
+      rooms[upperRoomCode].answers = {}; // Reset les réponses pour cette musique
 
-      io.to(roomCode).emit("blindtest_music", {
+      io.to(upperRoomCode).emit("blindtest_music", {
         musicId: musicId,
         url: `/blindtest/audio/stream/${musicId}`,
-        startTime: rooms[roomCode].musicStartTime,
+        startTime: rooms[upperRoomCode].musicStartTime,
         index: index + 1,
         total: sequence.length,
       });
 
       // Attend 30 secondes ou jusqu'à ce que tous les joueurs aient répondu
-      let timeoutReached = false;
-      const players = Object.values(rooms[roomCode].players);
+      const players = Object.values(rooms[upperRoomCode].players);
 
       const waitForAnswers = () =>
         new Promise((resolve) => {
-          const timer = setTimeout(() => {
-            timeoutReached = true;
-            cleanup();
+          const timeoutId = setTimeout(() => {
+            clearInterval(intervalId);
             resolve();
           }, 30000);
 
-          // Ecoute les réponses
-          const answerListener = ({ roomCode: rc, playerName, answer }) => {
-            if (rc !== roomCode) return;
-            if (!rooms[roomCode].answers) rooms[roomCode].answers = {};
-            if (!rooms[roomCode].answers[playerName]) {
-              rooms[roomCode].answers[playerName] = answer;
-            }
-            // Si tous les joueurs ont répondu, on arrête le timer
-            if (
-              Object.keys(rooms[roomCode].answers).length === players.length &&
-              !timeoutReached
-            ) {
-              clearTimeout(timer);
-              cleanup();
+          const intervalId = setInterval(() => {
+            if (rooms[upperRoomCode] && (Object.keys(rooms[upperRoomCode].answers || {}).length >= players.length)) {
+              clearInterval(intervalId);
+              clearTimeout(timeoutId);
               resolve();
             }
-          };
-
-          function cleanup() {
-            socket.removeListener("blindtest_answer", answerListener);
-          }
-
-          socket.on("blindtest_answer", answerListener);
+          }, 200); // Check every 200ms
         });
 
       await waitForAnswers();
@@ -353,14 +347,14 @@ io.on("connection", (socket) => {
         .replace(/\.mp3$/i, "")
         .trim()
         .toLowerCase();
-      if (!rooms[roomCode]) {
+      if (!rooms[upperRoomCode]) {
         return;
       }
-      const startTime = rooms[roomCode].musicStartTime;
+      const startTime = rooms[upperRoomCode].musicStartTime;
       const now = Date.now();
 
       for (const playerName of players) {
-        const answer = rooms[roomCode].answers[playerName];
+        const answer = rooms[upperRoomCode].answers[playerName];
         let points = 0;
         let isCorrect = false;
         if (answer) {
@@ -371,28 +365,29 @@ io.on("connection", (socket) => {
             points = Math.max(100 - elapsedSeconds * 10, 10);
           }
         }
-        rooms[roomCode].scores[playerName] =
-          (rooms[roomCode].scores[playerName] || 0) + points;
+        rooms[upperRoomCode].scores[playerName] =
+          (rooms[upperRoomCode].scores[playerName] || 0) + points;
         // Envoie le résultat individuel
-        io.to(roomCode).emit("blindtest_result", {
+        io.to(upperRoomCode).emit("blindtest_result", {
           playerName,
           correct: isCorrect,
           points,
-          totalScore: rooms[roomCode].scores[playerName],
+          totalScore: rooms[upperRoomCode].scores[playerName],
           elapsedSeconds: answer ? Math.floor((now - startTime) / 1000) : null,
         });
       }
 
-      // Met à jour tous les scores de la room
-      io.to(roomCode).emit("blindtest_scores", {
-        scores: rooms[roomCode].scores,
+      // Révèle la bonne réponse et met à jour les scores
+      io.to(upperRoomCode).emit("blindtest_round_end", {
+        correctAnswer: correctName,
+        scores: rooms[upperRoomCode].scores,
       });
 
       // Passe à la musique suivante
-      rooms[roomCode].blindtestIndex = index + 1;
+      rooms[upperRoomCode].blindtestIndex = index + 1;
       setTimeout(() => {
         launchMusic(index + 1);
-      }, 2000); // Petite pause de 2s entre chaque musique
+      }, 5000); // Pause de 5s entre chaque musique pour voir les résultats
     };
 
     // Démarre la séquence
@@ -401,7 +396,8 @@ io.on("connection", (socket) => {
 
   // Réponse d'un joueur (pour la séquence, stocke juste la réponse côté serveur)
   socket.on("blindtest_answer", ({ roomCode, playerName, answer }) => {
-    if (!roomCode || !rooms[roomCode]) {
+    const upperRoomCode = roomCode ? roomCode.toUpperCase() : null;
+    if (!upperRoomCode || !rooms[upperRoomCode]) {
       socket.emit("blindtest_result", { error: "Room not found" });
       return;
     }
@@ -410,27 +406,31 @@ io.on("connection", (socket) => {
       return;
     }
     // Stocke la réponse pour le joueur dans la room, pour la musique en cours
-    if (!rooms[roomCode].answers) rooms[roomCode].answers = {};
-    if (!rooms[roomCode].answers[playerName]) {
-      rooms[roomCode].answers[playerName] = answer;
+    if (!rooms[upperRoomCode].answers) rooms[upperRoomCode].answers = {};
+    if (!rooms[upperRoomCode].answers[playerName]) {
+      rooms[upperRoomCode].answers[playerName] = answer;
     }
   });
 
   // --- Blindtest Socket.io Events ---
 
   socket.on("leave_room", (roomCode) => {
-    const room = rooms[roomCode];
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
     if (room && room.players[socket.id]) {
       delete room.players[socket.id];
+      delete room.readyPlayers[socket.id];
       
-      socket.leave(roomCode);
-      io.to(roomCode).emit("room_updated", {
+      socket.leave(upperRoomCode);
+      io.to(upperRoomCode).emit("room_updated", {
+        hostId: room.hostId,
         players: room.players,
+        readyPlayers: room.readyPlayers,
       });
 
       if (Object.keys(room.players).length === 0) {
-        delete rooms[roomCode];
-        console.log(`❌ Room supprimée (vide) : ${roomCode}`);
+        delete rooms[upperRoomCode];
+        console.log(`❌ Room supprimée (vide) : ${upperRoomCode}`);
       }
     }
   });
