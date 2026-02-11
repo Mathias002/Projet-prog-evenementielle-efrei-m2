@@ -114,7 +114,10 @@ io.on("connection", (socket) => {
     if (!room.players[socket.id]) {
       socket.emit("toggle_ready_response", {
         success: false,
-        error: { code: "NOT_IN_ROOM", message: "Vous n'êtes pas dans cette room" },
+        error: {
+          code: "NOT_IN_ROOM",
+          message: "Vous n'êtes pas dans cette room",
+        },
       });
       return;
     }
@@ -125,7 +128,9 @@ io.on("connection", (socket) => {
     const playerName = room.players[socket.id];
     const isReady = room.readyPlayers[socket.id];
 
-    log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, { roomCode });
+    log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, {
+      roomCode,
+    });
 
     // Envoie la mise à jour à tous les joueurs de la room
     io.to(roomCode).emit("room_updated", {
@@ -154,7 +159,7 @@ io.on("connection", (socket) => {
     // Vérifie que tous les joueurs sont prêts
     const allPlayers = Object.keys(room.players);
     const allReady = allPlayers.every(
-      (socketId) => room.readyPlayers[socketId] === true
+      (socketId) => room.readyPlayers[socketId] === true,
     );
 
     if (!allReady) {
@@ -312,6 +317,7 @@ io.on("connection", (socket) => {
         new Promise((resolve) => {
           const timer = setTimeout(() => {
             timeoutReached = true;
+            cleanup();
             resolve();
           }, 30000);
 
@@ -328,17 +334,16 @@ io.on("connection", (socket) => {
               !timeoutReached
             ) {
               clearTimeout(timer);
+              cleanup();
               resolve();
             }
           };
 
-          socket.on("blindtest_answer", answerListener);
-
-          // Nettoie le listener après la résolution
-          const cleanup = () => {
+          function cleanup() {
             socket.removeListener("blindtest_answer", answerListener);
-          };
-          waitForAnswers.finally(cleanup);
+          }
+
+          socket.on("blindtest_answer", answerListener);
         });
 
       await waitForAnswers();
@@ -348,6 +353,9 @@ io.on("connection", (socket) => {
         .replace(/\.mp3$/i, "")
         .trim()
         .toLowerCase();
+      if (!rooms[roomCode]) {
+        return;
+      }
       const startTime = rooms[roomCode].musicStartTime;
       const now = Date.now();
 
