@@ -148,6 +148,24 @@ io.on("connection", (socket) => {
     });
   });
 
+
+  socket.on("leave_room", (roomCode) => {
+    const room = rooms[roomCode];
+    if (room && room.players[socket.id]) {
+      delete room.players[socket.id];
+      
+      socket.leave(roomCode);
+      io.to(roomCode).emit("room_updated", {
+        players: room.players,
+      });
+
+      if (Object.keys(room.players).length === 0) {
+        delete rooms[roomCode];
+        console.log(`❌ Room supprimée (vide) : ${roomCode}`);
+      }
+    }
+  });
+
   socket.emit("connected", { socketId: socket.id });
 });
 

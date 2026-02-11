@@ -1,9 +1,10 @@
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { socket } from "../../socket";
 
 export default function Lobby() {
   const { state } = useLocation();
+  const navigate = useNavigate();
   const [isReady, setIsReady] = useState(false);
 
   const [room, setRoom] = useState(() => {
@@ -26,6 +27,14 @@ export default function Lobby() {
   const copyRoomCode = () => {
     navigator.clipboard.writeText(room.roomCode);
     // Tu peux ajouter un toast/notification ici
+  };
+
+  const leaveRoom = () => {
+    if (room?.roomCode) {
+      socket.emit("leave_room", room.roomCode);
+    }
+    sessionStorage.removeItem("currentRoom");
+    navigate("/");
   };
 
   // when we receive initial navigation state, persist it and set local state
@@ -454,6 +463,7 @@ export default function Lobby() {
             background: '#fafafa'
           }}>
             <button
+              onClick={leaveRoom}
               style={{
                 width: '100%',
                 padding: '12px',
