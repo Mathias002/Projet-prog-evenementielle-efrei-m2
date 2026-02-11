@@ -5,8 +5,6 @@ import { socket } from "../../socket";
 export default function Lobby() {
   const { state } = useLocation();
   const navigate = useNavigate();
-  const [isReady, setIsReady] = useState(false);
-
   const [room, setRoom] = useState(() => {
     // prefer the navigation state, otherwise try sessionStorage
     if (state) return state;
@@ -19,10 +17,18 @@ export default function Lobby() {
   });
 
   const startGame = () => {
-    console.log('Starting game...');
+    if (!room?.roomCode) return;
+    
+    // Émet l'événement pour lancer la partie
+    socket.emit("start_game", { roomCode: room.roomCode });
   };
 
-   const players = Object.values(room.players || {});
+  const toggleReady = () => {
+    if (!room?.roomCode) return;
+    
+    // Émet l'événement pour toggle l'état prêt
+    socket.emit("toggle_ready", { roomCode: room.roomCode });
+  };
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(room.roomCode);
@@ -52,12 +58,13 @@ export default function Lobby() {
   // listen for live updates from the server
   useEffect(() => {
     const handler = (data) => {
-      // data is expected to contain { players: { socketId: name, ... }, roomCode? }
+      // data is expected to contain { players: { socketId: name, ... }, readyPlayers: { socketId: true/false, ... }, roomCode? }
       const roomCode =
         data.roomCode || room?.roomCode || state?.roomCode || null;
       const updated = {
         roomCode,
         players: data.players,
+        readyPlayers: data.readyPlayers || {},
       };
       setRoom(updated);
       try {
@@ -73,6 +80,48 @@ export default function Lobby() {
     };
   }, [room, state]);
 
+  // ✨ NOUVEAU: Écouter le démarrage de la partie
+  useEffect(() => {
+    const handler = (data) => {
+      console.log("🎮 La partie commence !", data);
+      // Navigate vers la page de jeu
+      // navigate("/game", { state: { roomCode: data.roomCode, players: data.players } });
+    };
+
+    socket.on("game_started", handler);
+    return () => {
+      socket.off("game_started", handler);
+    };
+  }, [navigate]);
+
+  // ✨ NOUVEAU: Gérer les réponses toggle_ready
+  useEffect(() => {
+    const handler = (response) => {
+      if (!response.success) {
+        console.error("Erreur toggle ready:", response.error);
+      }
+    };
+
+    socket.on("toggle_ready_response", handler);
+    return () => {
+      socket.off("toggle_ready_response", handler);
+    };
+  }, []);
+
+  // ✨ NOUVEAU: Gérer les réponses start_game
+  useEffect(() => {
+    const handler = (response) => {
+      if (!response.success) {
+        alert(response.error.message);
+      }
+    };
+
+    socket.on("start_game_response", handler);
+    return () => {
+      socket.off("start_game_response", handler);
+    };
+  }, []);
+
   if (!room) {
     return (
       <div>
@@ -81,6 +130,21 @@ export default function Lobby() {
       </div>
     );
   }
+
+  // Récupère les données des joueurs
+  const players = Object.entries(room.players || {}).map(([socketId, name]) => ({
+    socketId,
+    name,
+    isReady: room.readyPlayers?.[socketId] || false,
+  }));
+
+  // Calcule le nombre de joueurs prêts
+  const readyCount = players.filter((p) => p.isReady).length;
+  const totalPlayers = players.length;
+  const allReady = readyCount === totalPlayers && totalPlayers > 0;
+
+  // Détermine si le joueur actuel est prêt
+  const currentPlayerReady = room.readyPlayers?.[socket.id] || false;
 
   return (
     <div style={{
@@ -196,7 +260,7 @@ export default function Lobby() {
               fontSize: '40px',
               boxShadow: '0 8px 24px rgba(102, 126, 234, 0.4)'
             }}>
-              🎯
+              {allReady ? '🚀' : '🎯'}
             </div>
 
             <h2 style={{
@@ -205,7 +269,7 @@ export default function Lobby() {
               fontWeight: '700',
               color: '#1f2937'
             }}>
-              Prêt à jouer ?
+              {allReady ? 'C\'est parti !' : 'Prêt à jouer ?'}
             </h2>
 
             <p style={{
@@ -214,7 +278,9 @@ export default function Lobby() {
               color: '#6b7280',
               lineHeight: '1.6'
             }}>
-              En attente que tous les joueurs soient prêts pour commencer la partie
+              {allReady 
+                ? 'Tous les joueurs sont prêts ! Vous pouvez lancer la partie.'
+                : 'En attente que tous les joueurs soient prêts pour commencer la partie'}
             </p>
 
             {/* Barre de progression des joueurs prêts */}
@@ -240,9 +306,9 @@ export default function Lobby() {
                 <span style={{
                   fontSize: '14px',
                   fontWeight: '700',
-                  color: '#667eea'
+                  color: allReady ? '#10b981' : '#667eea'
                 }}>
-                  {isReady ? 1 : 0}/{players.length}
+                  {readyCount}/{totalPlayers}
                 </span>
               </div>
               <div style={{
@@ -253,10 +319,12 @@ export default function Lobby() {
                 overflow: 'hidden'
               }}>
                 <div style={{
-                  width: `${(isReady ? 1 : 0) / players.length * 100}%`,
+                  width: `${(readyCount / totalPlayers) * 100}%`,
                   height: '100%',
-                  background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)',
-                  transition: 'width 0.3s ease'
+                  background: allReady 
+                    ? 'linear-gradient(90deg, #10b981 0%, #059669 100%)'
+                    : 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)',
+                  transition: 'all 0.3s ease'
                 }} />
               </div>
             </div>
@@ -268,63 +336,63 @@ export default function Lobby() {
               flexDirection: 'column'
             }}>
               <button
-                onClick={() => setIsReady(!isReady)}
+                onClick={toggleReady}
                 style={{
                   width: '100%',
                   padding: '16px',
                   fontSize: '16px',
                   fontWeight: '600',
-                  color: isReady ? '#667eea' : 'white',
-                  background: isReady ? 'white' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                  border: isReady ? '2px solid #667eea' : 'none',
+                  color: currentPlayerReady ? '#667eea' : 'white',
+                  background: currentPlayerReady ? 'white' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  border: currentPlayerReady ? '2px solid #667eea' : 'none',
                   borderRadius: '12px',
                   cursor: 'pointer',
                   transition: 'all 0.2s ease',
-                  boxShadow: isReady ? 'none' : '0 4px 12px rgba(102, 126, 234, 0.4)'
+                  boxShadow: currentPlayerReady ? 'none' : '0 4px 12px rgba(102, 126, 234, 0.4)'
                 }}
                 onMouseEnter={(e) => {
-                  if (!isReady) {
+                  if (!currentPlayerReady) {
                     e.target.style.transform = 'translateY(-2px)';
                     e.target.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.5)';
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (!isReady) {
+                  if (!currentPlayerReady) {
                     e.target.style.transform = 'translateY(0)';
                     e.target.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.4)';
                   }
                 }}
               >
-                {isReady ? '✓ Prêt !' : '👍 Je suis prêt'}
+                {currentPlayerReady ? '✓ Prêt !' : '👍 Je suis prêt'}
               </button>
 
               <button
                 onClick={startGame}
-                disabled={!isReady}
+                disabled={!allReady}
                 style={{
                   width: '100%',
                   padding: '16px',
                   fontSize: '16px',
                   fontWeight: '600',
                   color: 'white',
-                  background: isReady 
+                  background: allReady 
                     ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
                     : '#d1d5db',
                   border: 'none',
                   borderRadius: '12px',
-                  cursor: isReady ? 'pointer' : 'not-allowed',
+                  cursor: allReady ? 'pointer' : 'not-allowed',
                   transition: 'all 0.2s ease',
-                  opacity: isReady ? 1 : 0.5,
-                  boxShadow: isReady ? '0 4px 12px rgba(16, 185, 129, 0.4)' : 'none'
+                  opacity: allReady ? 1 : 0.5,
+                  boxShadow: allReady ? '0 4px 12px rgba(16, 185, 129, 0.4)' : 'none'
                 }}
                 onMouseEnter={(e) => {
-                  if (isReady) {
+                  if (allReady) {
                     e.target.style.transform = 'translateY(-2px)';
                     e.target.style.boxShadow = '0 6px 20px rgba(16, 185, 129, 0.5)';
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (isReady) {
+                  if (allReady) {
                     e.target.style.transform = 'translateY(0)';
                     e.target.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.4)';
                   }
@@ -373,7 +441,7 @@ export default function Lobby() {
               fontSize: '14px',
               color: '#6b7280'
             }}>
-              {players.length} {players.length > 1 ? 'joueurs' : 'joueur'} dans la room
+              {totalPlayers} {totalPlayers > 1 ? 'joueurs' : 'joueur'} dans la room
             </p>
           </div>
 
@@ -383,9 +451,9 @@ export default function Lobby() {
             overflowY: 'auto',
             padding: '16px'
           }}>
-            {players.map((name, index) => (
+            {players.map((player, index) => (
               <div
-                key={name}
+                key={player.socketId}
                 style={{
                   background: index === 0 
                     ? 'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)'
@@ -416,7 +484,7 @@ export default function Lobby() {
                   color: 'white',
                   flexShrink: 0
                 }}>
-                  {name.charAt(0).toUpperCase()}
+                  {player.name.charAt(0).toUpperCase()}
                 </div>
 
                 {/* Info joueur */}
@@ -429,7 +497,7 @@ export default function Lobby() {
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap'
                   }}>
-                    {name}
+                    {player.name}
                   </div>
                   {index === 0 && (
                     <div style={{
@@ -443,15 +511,35 @@ export default function Lobby() {
                   )}
                 </div>
 
-                {/* Status indicator */}
+                {/* Status indicator - UPDATED avec état prêt */}
                 <div style={{
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  background: '#10b981',
-                  boxShadow: '0 0 8px rgba(16, 185, 129, 0.6)',
-                  flexShrink: 0
-                }} />
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  {player.isReady && (
+                    <span style={{
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      color: '#10b981',
+                      background: 'rgba(16, 185, 129, 0.1)',
+                      padding: '4px 8px',
+                      borderRadius: '6px'
+                    }}>
+                      ✓ Prêt
+                    </span>
+                  )}
+                  <div style={{
+                    width: '10px',
+                    height: '10px',
+                    borderRadius: '50%',
+                    background: player.isReady ? '#10b981' : '#fbbf24',
+                    boxShadow: player.isReady 
+                      ? '0 0 8px rgba(16, 185, 129, 0.6)'
+                      : '0 0 8px rgba(251, 191, 36, 0.6)',
+                    flexShrink: 0
+                  }} />
+                </div>
               </div>
             ))}
           </div>
