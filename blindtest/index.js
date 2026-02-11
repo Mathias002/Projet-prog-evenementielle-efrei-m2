@@ -2,9 +2,12 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 
@@ -17,6 +20,17 @@ const io = new Server(server, {
 const rooms = {};
 
 const users = new Map();
+
+// Helper to get all audio files
+function getAudioFiles() {
+  const audioDir = path.join(__dirname, "audio");
+  return fs.readdirSync(audioDir).filter((file) => file.endsWith(".mp3"));
+}
+
+// Génère un identifiant unique pour chaque musique lancée
+function generateMusicId() {
+  return Math.random().toString(36).substring(2, 10);
+}
 
 function generateRoomCode() {
   return Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -39,10 +53,6 @@ io.on("connection", (socket) => {
 
   socket.on("join_room", ({ roomName, playerName }) => {
     const room = rooms[roomName];
-
-    console.log(roomName);
-    console.log(playerName);
-    console.log(room);
 
     if (!room) {
       socket.emit("join_room_response", {
@@ -83,7 +93,6 @@ io.on("connection", (socket) => {
     });
 
     console.log(`👤 ${playerName} a rejoint ${roomName}`);
-    console.log(`${room.players[socket.id]}`);
   });
 
   socket.on("disconnect", () => {
@@ -130,6 +139,9 @@ io.on("connection", (socket) => {
         [socket.id]: playerName,
       },
       createdAt: Date.now(),
+      scores: {},
+      currentMusic: null,
+      musicStartTime: null,
     };
 
     socket.join(roomCode);
@@ -146,6 +158,165 @@ io.on("connection", (socket) => {
         players: rooms[roomCode].players,
       },
     });
+  });
+
+  // --- Blindtest Socket.io Events ---
+
+  // Lancer une séquence de 10 musiques (événement de démarrage du jeu)
+  socket.on("blindtest_game_start", async ({ roomCode }) => {
+    if (!roomCode || !rooms[roomCode]) {
+      socket.emit("blindtest_error", { error: "Room not found" });
+      return;
+    }
+    const audioFiles = getAudioFiles();
+    if (audioFiles.length < 10) {
+      io.to(roomCode).emit("blindtest_error", {
+        error: "Not enough audio files (need at least 10)",
+      });
+      return;
+    }
+
+    // Mélange et sélectionne 10 musiques
+    const shuffled = audioFiles.sort(() => 0.5 - Math.random());
+    const sequence = shuffled.slice(0, 10);
+
+    rooms[roomCode].blindtestSequence = sequence;
+    rooms[roomCode].blindtestIndex = 0;
+    rooms[roomCode].scores = {};
+    rooms[roomCode].answers = {}; // Pour stocker les réponses des joueurs à chaque musique
+
+    // Fonction pour lancer chaque musique et attendre les réponses
+    const launchMusic = async (index) => {
+      if (index >= sequence.length) {
+        // Fin du jeu
+        io.to(roomCode).emit("blindtest_game_end", {
+          scores: rooms[roomCode].scores,
+        });
+        return;
+      }
+
+      const chosenFile = sequence[index];
+      const musicId = generateMusicId();
+
+      rooms[roomCode].currentMusic = {
+        id: musicId,
+        filename: chosenFile,
+      };
+      rooms[roomCode].musicStartTime = Date.now();
+      rooms[roomCode].answers = {}; // Reset les réponses pour cette musique
+
+      io.to(roomCode).emit("blindtest_music", {
+        musicId: musicId,
+        url: `/blindtest/audio/stream/${musicId}`,
+        startTime: rooms[roomCode].musicStartTime,
+        index: index + 1,
+        total: sequence.length,
+      });
+
+      // Attend 30 secondes ou jusqu'à ce que tous les joueurs aient répondu
+      let timeoutReached = false;
+      const players = Object.values(rooms[roomCode].players);
+
+      const waitForAnswers = () =>
+        new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            timeoutReached = true;
+            resolve();
+          }, 30000);
+
+          // Ecoute les réponses
+          const answerListener = ({ roomCode: rc, playerName, answer }) => {
+            if (rc !== roomCode) return;
+            if (!rooms[roomCode].answers) rooms[roomCode].answers = {};
+            if (!rooms[roomCode].answers[playerName]) {
+              rooms[roomCode].answers[playerName] = answer;
+            }
+            // Si tous les joueurs ont répondu, on arrête le timer
+            if (
+              Object.keys(rooms[roomCode].answers).length === players.length &&
+              !timeoutReached
+            ) {
+              clearTimeout(timer);
+              resolve();
+            }
+          };
+
+          socket.on("blindtest_answer", answerListener);
+
+          // Nettoie le listener après la résolution
+          const cleanup = () => {
+            socket.removeListener("blindtest_answer", answerListener);
+          };
+          waitForAnswers.finally(cleanup);
+        });
+
+      await waitForAnswers();
+
+      // Calcul des scores pour cette musique
+      const correctName = chosenFile
+        .replace(/\.mp3$/i, "")
+        .trim()
+        .toLowerCase();
+      const startTime = rooms[roomCode].musicStartTime;
+      const now = Date.now();
+
+      for (const playerName of players) {
+        const answer = rooms[roomCode].answers[playerName];
+        let points = 0;
+        let isCorrect = false;
+        if (answer) {
+          const normalizedAnswer = answer.trim().toLowerCase();
+          isCorrect = normalizedAnswer === correctName;
+          if (isCorrect) {
+            const elapsedSeconds = Math.floor((now - startTime) / 1000);
+            points = Math.max(100 - elapsedSeconds * 10, 10);
+          }
+        }
+        rooms[roomCode].scores[playerName] =
+          (rooms[roomCode].scores[playerName] || 0) + points;
+        // Envoie le résultat individuel
+        io.to(roomCode).emit("blindtest_result", {
+          playerName,
+          correct: isCorrect,
+          points,
+          totalScore: rooms[roomCode].scores[playerName],
+          elapsedSeconds: answer ? Math.floor((now - startTime) / 1000) : null,
+        });
+      }
+
+      // Met à jour tous les scores de la room
+      io.to(roomCode).emit("blindtest_scores", {
+        scores: rooms[roomCode].scores,
+      });
+
+      // Passe à la musique suivante
+      rooms[roomCode].blindtestIndex = index + 1;
+      setTimeout(() => {
+        launchMusic(index + 1);
+      }, 2000); // Petite pause de 2s entre chaque musique
+    };
+
+    // Démarre la séquence
+    launchMusic(0);
+  });
+
+  // Réponse d'un joueur (pour la séquence, stocke juste la réponse côté serveur)
+  socket.on("blindtest_answer", ({ roomCode, playerName, answer }) => {
+    if (!roomCode || !rooms[roomCode]) {
+      socket.emit("blindtest_result", { error: "Room not found" });
+      return;
+    }
+    if (!playerName) {
+      socket.emit("blindtest_result", { error: "Player name required" });
+      return;
+    }
+    // Stocke la réponse pour le joueur dans la room, pour la musique en cours
+    if (!rooms[roomCode].answers) rooms[roomCode].answers = {};
+    if (!rooms[roomCode].answers[playerName]) {
+      rooms[roomCode].answers[playerName] = answer;
+    }
+    // Le calcul des points se fait à la fin du timer ou quand tous les joueurs ont répondu
+    // (voir la logique dans blindtest_game_start)
   });
 
   socket.emit("connected", { socketId: socket.id });
