@@ -349,10 +349,55 @@ io.on("connection", (socket) => {
       await waitForAnswers();
 
       // Calcul des scores pour cette musique
-      const correctName = chosenFile
-        .replace(/\.mp3$/i, "")
-        .trim()
-        .toLowerCase();
+      const baseName = chosenFile.replace(/\.mp3$/i, "").trim();
+
+      // Normaliser une chaîne : supprimer accents, ponctuation (sauf lettres/nombres/espaces), mettre en minuscule et compacter les espaces
+      function normalizeStr(str) {
+        if (!str) return "";
+        return str
+          .normalize("NFD")
+          .replace(/\p{Diacritic}/gu, "") // enlève les accents
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}\s]/gu, "") // garde seulement lettres/nombres/espaces
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      // Extraire titre / artiste à partir du nom de fichier (ex : "Titre - Artiste.mp3")
+      const parts = baseName
+        .split("-")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      let title = "";
+      let artist = "";
+      if (parts.length === 0) {
+        title = baseName;
+      } else if (parts.length === 1) {
+        title = parts[0];
+      } else {
+        title = parts[0];
+        artist = parts.slice(1).join(" - ");
+      }
+
+      const normalizedTitle = normalizeStr(title);
+      const normalizedArtist = normalizeStr(artist);
+      const normalizedBase = normalizeStr(baseName);
+
+      // Construire un ensemble de réponses acceptables :
+      // - titre seul
+      // - artiste seul
+      // - "titre artiste" et "artiste titre" (sans le "-")
+      // - nom de fichier normalisé (avec ou sans "-")
+      const acceptableAnswers = new Set();
+      if (normalizedTitle) acceptableAnswers.add(normalizedTitle);
+      if (normalizedArtist) acceptableAnswers.add(normalizedArtist);
+      if (normalizedTitle && normalizedArtist) {
+        acceptableAnswers.add(`${normalizedTitle} ${normalizedArtist}`);
+        acceptableAnswers.add(`${normalizedArtist} ${normalizedTitle}`);
+        acceptableAnswers.add(normalizedBase.replace(/\s*-\s*/g, " "));
+      }
+      acceptableAnswers.add(normalizedBase);
+
       if (!rooms[roomCode]) {
         return;
       }
@@ -364,9 +409,9 @@ io.on("connection", (socket) => {
         let points = 0;
         let isCorrect = false;
         if (answer) {
-          const normalizedAnswer = answer.trim().toLowerCase();
-          isCorrect = normalizedAnswer === correctName;
-          if (isCorrect) {
+          const normalizedAnswer = normalizeStr(answer);
+          if (acceptableAnswers.has(normalizedAnswer)) {
+            isCorrect = true;
             const elapsedSeconds = Math.floor((now - startTime) / 1000);
             points = Math.max(100 - elapsedSeconds * 10, 10);
           }
