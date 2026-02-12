@@ -199,7 +199,7 @@ io.on("connection", (socket) => {
     const fileName = activeStreams.get(musicId);
 
     if (!fileName) {
-      return res.status(404).send("Lien expiré ou invalide");
+      return res.status(404).send("Lien expiré ou invalide");  
     }
 
     const filePath = path.join(__dirname, "audio", fileName);
