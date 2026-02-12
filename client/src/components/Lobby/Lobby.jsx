@@ -48,7 +48,6 @@ export default function Lobby() {
     
     // Émet l'événement pour lancer la partie
     socket.emit("start_game", { roomCode: room.roomCode });
-    navigate("/game");
   };
 
   const toggleReady = () => {
@@ -117,14 +116,14 @@ export default function Lobby() {
     const handler = (data) => {
       console.log("🎮 La partie commence !", data);
       // Navigate vers la page de jeu
-      // navigate("/game", { state: { roomCode: data.roomCode, players: data.players } });
+      navigate("/game", { state: { ...room, ...data } });
     };
 
     socket.on("game_started", handler);
     return () => {
       socket.off("game_started", handler);
     };
-  }, [navigate]);
+  }, [navigate, room]);
 
   // ✨ NOUVEAU: Gérer les réponses toggle_ready
   useEffect(() => {

@@ -321,6 +321,8 @@ io.on("connection", (socket) => {
 
     // Fonction pour lancer chaque musique et attendre les réponses
     const launchMusic = async (index) => {
+      if (!rooms[upperRoomCode]) return;
+
       if (index >= sequence.length) {
         // Fin du jeu
         io.to(upperRoomCode).emit("blindtest_game_end", {

@@ -36,10 +36,10 @@ export default function Game() {
   const [answer, setAnswer] = useState("");
   const [hasAnswered, setHasAnswered] = useState(false);
   const [timer, setTimer] = useState(15);
+  const gameStartedRef = useRef(false);
   const audioRef = useRef(null);
   const timerIntervalRef = useRef(null);
   const [startCountdown, setStartCountdown] = useState(null);
-  const gameStartedRef = useRef(false);
 
   useEffect(() => {
     const onConnect = () => setSocketId(socket.id);
@@ -56,6 +56,7 @@ export default function Game() {
 
   // L'hôte lance la séquence de jeu
   useEffect(() => {
+    if (room?.roomCode && socketId) {
     if (room?.roomCode && socketId && !gameStartedRef.current) {
       const amIHost = room.hostId === socketId;
       if (amIHost) {
@@ -64,7 +65,8 @@ export default function Game() {
         socket.emit("blindtest_game_start", { roomCode: room.roomCode });
       }
     }
-  }, [room?.roomCode, room?.hostId, socketId]);
+  }}, [room?.roomCode, room?.hostId, socketId]);
+  
 
   // Écouteurs d'événements du jeu
   useEffect(() => {
