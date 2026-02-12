@@ -319,10 +319,13 @@ io.on("connection", (socket) => {
     rooms[upperRoomCode].scores = {};
     rooms[upperRoomCode].answers = {}; // Pour stocker les réponses des joueurs à chaque musique
 
+    for (const socketId in rooms[upperRoomCode].players) {
+      const playerName = rooms[upperRoomCode].players[socketId];
+      rooms[upperRoomCode].scores[playerName] = 0;
+    }
+
     // Fonction pour lancer chaque musique et attendre les réponses
     const launchMusic = async (index) => {
-      if (!rooms[upperRoomCode]) return;
-
       if (index >= sequence.length) {
         // Fin du jeu
         io.to(upperRoomCode).emit("blindtest_game_end", {
@@ -347,6 +350,7 @@ io.on("connection", (socket) => {
       };
       rooms[upperRoomCode].musicStartTime = Date.now();
       rooms[upperRoomCode].answers = {}; // Reset les réponses pour cette musique
+      rooms[upperRoomCode].answeredPlayers = new Set(); // Keep track of who answered correctly for this music
 
       io.to(upperRoomCode).emit("blindtest_music", {
         musicId: musicId,
@@ -356,8 +360,90 @@ io.on("connection", (socket) => {
         total: sequence.length,
       });
 
+      // Normaliser une chaîne : supprimer accents, ponctuation (sauf lettres/nombres/espaces), mettre en minuscule et compacter les espaces
+      // 1. LA FONCTION CORRIGÉE
+      function normalizeStr(str) {
+        if (!str) return "";
+        return (
+          str
+            .normalize("NFD")
+            .replace(/\p{Diacritic}/gu, "") // Enlève les accents
+            .toLowerCase()
+            // On utilise une regex simple : ^a-z0-9\s signifie "tout ce qui n'est PAS lettre, chiffre ou espace"
+            .replace(/[^a-z0-9\s]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+        );
+      }
+
+      rooms[upperRoomCode].normalizeStr = normalizeStr;
+
+      // 2. LE TRAITEMENT DU FICHIER
+      const MIN_LENGTH = 2;
+
+      // Nettoyage initial
+      let cleanerName = chosenFile.replace(/\.mp3$/i, "");
+      cleanerName = cleanerName.replace(/(\(|\[).*?(\)|\])/g, "").trim();
+
+      // Découpage strict
+      const parts = cleanerName
+        .split(/\s+-\s+|_/)
+        .map((p) => p.trim())
+        .filter((p) => p.length >= MIN_LENGTH);
+
+      let title = "";
+      let artist = "";
+
+      if (parts.length === 0) {
+        // Si le split ne donne rien de bon, on prend tout le nom nettoyé
+        title = cleanerName;
+      } else if (parts.length === 1) {
+        title = parts[0];
+      } else {
+        artist = parts[0];
+        title = parts.slice(1).join(" ");
+      }
+
+      const normalizedTitle = normalizeStr(title);
+      const normalizedArtist = normalizeStr(artist);
+      const normalizedBase = normalizeStr(cleanerName);
+
+      const acceptableAnswers = new Set();
+
+      // 3. REMPLISSAGE DU SET
+      if (normalizedTitle.length >= MIN_LENGTH) {
+        acceptableAnswers.add(normalizedTitle);
+      }
+
+      if (normalizedArtist.length >= MIN_LENGTH) {
+        acceptableAnswers.add(normalizedArtist);
+      }
+
+      // Combinaisons (seulement si on a les deux)
+      if (
+        normalizedTitle.length >= MIN_LENGTH &&
+        normalizedArtist.length >= MIN_LENGTH
+      ) {
+        acceptableAnswers.add(`${normalizedTitle} ${normalizedArtist}`);
+        acceptableAnswers.add(`${normalizedArtist} ${normalizedTitle}`);
+
+        // Cas spécifique : nom de base sans aucun caractère spécial
+        // (La regex ici doit être cohérente avec normalizeStr)
+        const flatBase = normalizedBase.replace(/[^a-z0-9 ]/g, " ").trim();
+        if (flatBase.length >= MIN_LENGTH) {
+          acceptableAnswers.add(flatBase);
+        }
+      }
+
+      // Toujours ajouter le nom de base s'il est valide
+      if (normalizedBase.length >= MIN_LENGTH) {
+        acceptableAnswers.add(normalizedBase);
+      }
+
+      // Mise à jour de la roomd
+      rooms[upperRoomCode].acceptableAnswers = acceptableAnswers;
+
       // Attend 15 secondes ou jusqu'à ce que tous les joueurs aient répondu
-      // On déduplique les joueurs pour éviter d'envoyer plusieurs fois le score si un joueur a des sockets fantômes
       const players = [...new Set(Object.values(rooms[upperRoomCode].players))];
 
       const waitForAnswers = () =>
@@ -370,8 +456,7 @@ io.on("connection", (socket) => {
           const intervalId = setInterval(() => {
             if (
               rooms[upperRoomCode] &&
-              Object.keys(rooms[upperRoomCode].answers || {}).length >=
-                players.length
+              rooms[upperRoomCode].answeredPlayers.size >= players.length
             ) {
               clearInterval(intervalId);
               clearTimeout(timeoutId);
@@ -382,88 +467,8 @@ io.on("connection", (socket) => {
 
       await waitForAnswers();
 
-      const baseName = chosenFile.replace(/\.mp3$/i, "").trim();
-
-      // Normaliser une chaîne : supprimer accents, ponctuation (sauf lettres/nombres/espaces), mettre en minuscule et compacter les espaces
-      function normalizeStr(str) {
-        if (!str) return "";
-        return str
-          .normalize("NFD")
-          .replace(/\p{Diacritic}/gu, "") // enlève les accents
-          .toLowerCase()
-          .replace(/[^\p{L}\p{N}\s]/gu, "") // garde seulement lettres/nombres/espaces
-          .replace(/\s+/g, " ")
-          .trim();
-      }
-
-      // Extraire titre / artiste à partir du nom de fichier (ex : "Titre - Artiste.mp3")
-      const parts = baseName
-        .split("-")
-        .map((p) => p.trim())
-        .filter(Boolean);
-      let title = "";
-      let artist = "";
-      if (parts.length === 0) {
-        title = baseName;
-      } else if (parts.length === 1) {
-        title = parts[0];
-      } else {
-        title = parts[0];
-        artist = parts.slice(1).join(" - ");
-      }
-
-      const normalizedTitle = normalizeStr(title);
-      const normalizedArtist = normalizeStr(artist);
-      const normalizedBase = normalizeStr(baseName);
-
-      // Construire un ensemble de réponses acceptables :
-      // - titre seul
-      // - artiste seul
-      // - "titre artiste" et "artiste titre" (sans le "-")
-      // - nom de fichier normalisé (avec ou sans "-")
-      const acceptableAnswers = new Set();
-      if (normalizedTitle) acceptableAnswers.add(normalizedTitle);
-      if (normalizedArtist) acceptableAnswers.add(normalizedArtist);
-      if (normalizedTitle && normalizedArtist) {
-        acceptableAnswers.add(`${normalizedTitle} ${normalizedArtist}`);
-        acceptableAnswers.add(`${normalizedArtist} ${normalizedTitle}`);
-        acceptableAnswers.add(normalizedBase.replace(/\s*-\s*/g, " "));
-      }
-      acceptableAnswers.add(normalizedBase);
-      // Calcul des scores pour cette musique
-      const correctName = chosenFile.replace(/\.mp3$/i, "");
-      if (!rooms[upperRoomCode]) {
-        return;
-      }
-      const startTime = rooms[upperRoomCode].musicStartTime;
-      const now = Date.now();
-
-      for (const playerName of players) {
-        const answer = rooms[upperRoomCode].answers[playerName];
-        let points = 0;
-        let isCorrect = false;
-        if (answer) {
-          const normalizedAnswer = normalizeStr(answer);
-          if (acceptableAnswers.has(normalizedAnswer)) {
-            isCorrect = true;
-            const elapsedSeconds = Math.floor((now - startTime) / 1000);
-            points = Math.max(100 - elapsedSeconds * 10, 10);
-          }
-        }
-        rooms[upperRoomCode].scores[playerName] =
-          (rooms[upperRoomCode].scores[playerName] || 0) + points;
-        // Envoie le résultat individuel
-
-        io.to(upperRoomCode).emit("blindtest_result", {
-          playerName,
-          correct: isCorrect,
-          points,
-          totalScore: rooms[upperRoomCode].scores[playerName],
-          elapsedSeconds: answer ? Math.floor((now - startTime) / 1000) : null,
-        });
-      }
-
-      // Révèle la bonne réponse et met à jour les scores
+      // Révèle la bonne réponse et met à jour les scores (scores already updated in real-time)
+      const correctName = chosenFile.replace(/\\.mp3$/i, "");
       io.to(upperRoomCode).emit("blindtest_round_end", {
         correctAnswer: correctName,
         scores: rooms[upperRoomCode].scores,
@@ -484,24 +489,57 @@ io.on("connection", (socket) => {
   });
 
   // Réponse d'un joueur (pour la séquence, stocke juste la réponse côté serveur)
-  socket.on("blindtest_answer", ({ roomCode, playerName, answer }) => {
-    const upperRoomCode = roomCode ? roomCode.toUpperCase() : null;
-    console.log(roomCode);
-    console.log(playerName);
-    console.log(answer);
-    if (!upperRoomCode || !rooms[upperRoomCode]) {
-      socket.emit("blindtest_result", { error: "Room not found" });
+  // Assuming this code is within your io.on('connection', (socket) => { ... }); block
+  socket.on("blindtest_answer", ({ roomCode, answer }) => {
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
+    const playerSocketId = socket.id;
+    const playerName = room.players[playerSocketId];
+
+    if (!room || !playerName || !room.currentMusic) {
+      socket.emit("blindtest_error", { message: "Cannot submit answer." });
       return;
     }
-    if (!playerName) {
-      socket.emit("blindtest_result", { error: "Player name required" });
+
+    // Prevent multiple correct answers for the same music
+    if (room.answeredPlayers.has(playerName)) {
+      socket.emit("blindtest_result", {
+        playerName,
+        correct: true, // Already answered correctly
+        points: 0, // No additional points
+        totalScore: room.scores[playerName],
+        elapsedSeconds: null,
+        message: "You have already answered correctly for this song.",
+      });
       return;
     }
-    // Stocke la réponse pour le joueur dans la room, pour la musique en cours
-    if (!rooms[upperRoomCode].answers) rooms[upperRoomCode].answers = {};
-    if (!rooms[upperRoomCode].answers[playerName]) {
-      rooms[upperRoomCode].answers[playerName] = answer;
+
+    const musicStartTime = room.musicStartTime;
+    const now = Date.now();
+    const elapsedSeconds = Math.floor((now - musicStartTime) / 1000);
+
+    let points = 0;
+    let isCorrect = false;
+
+    // Use the normalizeStr and acceptableAnswers stored in the room
+    const normalizedAnswer = room.normalizeStr(answer);
+
+    if (room.acceptableAnswers.has(normalizedAnswer)) {
+      isCorrect = true;
+      points = Math.max(100 - elapsedSeconds * 10, 10); // Adjust point calculation as desired
+
+      room.scores[playerName] = (room.scores[playerName] || 0) + points;
     }
+
+    room.answeredPlayers.add(playerName);
+
+    io.to(upperRoomCode).emit("blindtest_result", {
+      playerName,
+      correct: isCorrect,
+      points,
+      totalScore: room.scores[playerName],
+      elapsedSeconds,
+    });
   });
 
   // --- Blindtest Socket.io Events ---
