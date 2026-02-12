@@ -21,6 +21,9 @@ const rooms = {};
 
 const users = new Map();
 
+// Stocke les liens temporaires vers les fichiers audio (ID -> Nom du fichier)
+const activeStreams = new Map();
+
 // Helper to get all audio files
 function getAudioFiles() {
   const audioDir = path.join(__dirname, "audio");
@@ -190,6 +193,30 @@ io.on("connection", (socket) => {
     });
   });
 
+  // Route pour streamer l'audio
+  app.get("/blindtest/audio/stream/:id", (req, res) => {
+    const musicId = req.params.id;
+    const fileName = activeStreams.get(musicId);
+
+    if (!fileName) {
+      return res.status(404).send("Lien expiré ou invalide");
+    }
+
+    const filePath = path.join(__dirname, "audio", fileName);
+
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      res.writeHead(200, {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": stat.size,
+      });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.status(404).send("Fichier introuvable");
+    }
+  });
+
+
   socket.on("disconnect", () => {
     for (const roomCode in rooms) {
       const room = rooms[roomCode];
@@ -306,6 +333,13 @@ io.on("connection", (socket) => {
       const chosenFile = sequence[index];
       const musicId = generateMusicId();
 
+      // Enregistre le fichier dans la map de streaming
+      activeStreams.set(musicId, chosenFile);
+      // Nettoyage de sécurité après 20 secondes (le tour dure 15s + pauses)
+      setTimeout(() => {
+        activeStreams.delete(musicId);
+      }, 20000);
+
       rooms[upperRoomCode].currentMusic = {
         id: musicId,
         filename: chosenFile,
@@ -321,15 +355,16 @@ io.on("connection", (socket) => {
         total: sequence.length,
       });
 
-      // Attend 30 secondes ou jusqu'à ce que tous les joueurs aient répondu
-      const players = Object.values(rooms[upperRoomCode].players);
+      // Attend 15 secondes ou jusqu'à ce que tous les joueurs aient répondu
+      // On déduplique les joueurs pour éviter d'envoyer plusieurs fois le score si un joueur a des sockets fantômes
+      const players = [...new Set(Object.values(rooms[upperRoomCode].players))];
 
       const waitForAnswers = () =>
         new Promise((resolve) => {
           const timeoutId = setTimeout(() => {
             clearInterval(intervalId);
             resolve();
-          }, 30000);
+          }, 15000);
 
           const intervalId = setInterval(() => {
             if (rooms[upperRoomCode] && (Object.keys(rooms[upperRoomCode].answers || {}).length >= players.length)) {
@@ -342,11 +377,19 @@ io.on("connection", (socket) => {
 
       await waitForAnswers();
 
+      function normalizeAnswer(str) {
+        return str
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .replace(/[-_.]/g, " ") // Remplace tirets, underscores et points par des espaces
+          .replace(/[^a-z0-9\s]/g, "") // Supprime la ponctuation restante (ex: ' ! ?)
+          .replace(/\s+/g, " ") // Fusionne les espaces multiples
+          .trim();
+      }
+
       // Calcul des scores pour cette musique
-      const correctName = chosenFile
-        .replace(/\.mp3$/i, "")
-        .trim()
-        .toLowerCase();
+      const correctName = normalizeAnswer(chosenFile.replace(/\.mp3$/i, ""));
       if (!rooms[upperRoomCode]) {
         return;
       }
@@ -390,8 +433,11 @@ io.on("connection", (socket) => {
       }, 5000); // Pause de 5s entre chaque musique pour voir les résultats
     };
 
-    // Démarre la séquence
-    launchMusic(0);
+    // Informe les joueurs du démarrage imminent (compte à rebours)
+    io.to(upperRoomCode).emit("blindtest_countdown", { seconds: 5 });
+
+    // Démarre la séquence après 5 secondes
+    setTimeout(() => launchMusic(0), 5000);
   });
 
   // Réponse d'un joueur (pour la séquence, stocke juste la réponse côté serveur)
