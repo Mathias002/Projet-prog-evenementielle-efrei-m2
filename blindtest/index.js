@@ -216,7 +216,6 @@ io.on("connection", (socket) => {
     }
   });
 
-
   socket.on("disconnect", () => {
     for (const roomCode in rooms) {
       const room = rooms[roomCode];
@@ -294,7 +293,7 @@ io.on("connection", (socket) => {
     });
   });
 
-    // --- Blindtest Socket.io Events ---
+  // --- Blindtest Socket.io Events ---
 
   // Lancer une séquence de 10 musiques (événement de démarrage du jeu)
   socket.on("blindtest_game_start", async ({ roomCode }) => {
@@ -367,7 +366,11 @@ io.on("connection", (socket) => {
           }, 15000);
 
           const intervalId = setInterval(() => {
-            if (rooms[upperRoomCode] && (Object.keys(rooms[upperRoomCode].answers || {}).length >= players.length)) {
+            if (
+              rooms[upperRoomCode] &&
+              Object.keys(rooms[upperRoomCode].answers || {}).length >=
+                players.length
+            ) {
               clearInterval(intervalId);
               clearTimeout(timeoutId);
               resolve();
@@ -377,19 +380,56 @@ io.on("connection", (socket) => {
 
       await waitForAnswers();
 
-      function normalizeAnswer(str) {
+      const baseName = chosenFile.replace(/\.mp3$/i, "").trim();
+
+      // Normaliser une chaîne : supprimer accents, ponctuation (sauf lettres/nombres/espaces), mettre en minuscule et compacter les espaces
+      function normalizeStr(str) {
+        if (!str) return "";
         return str
           .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\p{Diacritic}/gu, "") // enlève les accents
           .toLowerCase()
-          .replace(/[-_.]/g, " ") // Remplace tirets, underscores et points par des espaces
-          .replace(/[^a-z0-9\s]/g, "") // Supprime la ponctuation restante (ex: ' ! ?)
-          .replace(/\s+/g, " ") // Fusionne les espaces multiples
+          .replace(/[^\p{L}\p{N}\s]/gu, "") // garde seulement lettres/nombres/espaces
+          .replace(/\s+/g, " ")
           .trim();
       }
 
+      // Extraire titre / artiste à partir du nom de fichier (ex : "Titre - Artiste.mp3")
+      const parts = baseName
+        .split("-")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      let title = "";
+      let artist = "";
+      if (parts.length === 0) {
+        title = baseName;
+      } else if (parts.length === 1) {
+        title = parts[0];
+      } else {
+        title = parts[0];
+        artist = parts.slice(1).join(" - ");
+      }
+
+      const normalizedTitle = normalizeStr(title);
+      const normalizedArtist = normalizeStr(artist);
+      const normalizedBase = normalizeStr(baseName);
+
+      // Construire un ensemble de réponses acceptables :
+      // - titre seul
+      // - artiste seul
+      // - "titre artiste" et "artiste titre" (sans le "-")
+      // - nom de fichier normalisé (avec ou sans "-")
+      const acceptableAnswers = new Set();
+      if (normalizedTitle) acceptableAnswers.add(normalizedTitle);
+      if (normalizedArtist) acceptableAnswers.add(normalizedArtist);
+      if (normalizedTitle && normalizedArtist) {
+        acceptableAnswers.add(`${normalizedTitle} ${normalizedArtist}`);
+        acceptableAnswers.add(`${normalizedArtist} ${normalizedTitle}`);
+        acceptableAnswers.add(normalizedBase.replace(/\s*-\s*/g, " "));
+      }
+      acceptableAnswers.add(normalizedBase);
       // Calcul des scores pour cette musique
-      const correctName = normalizeAnswer(chosenFile.replace(/\.mp3$/i, ""));
+      const correctName = chosenFile.replace(/\.mp3$/i, "");
       if (!rooms[upperRoomCode]) {
         return;
       }
@@ -411,6 +451,7 @@ io.on("connection", (socket) => {
         rooms[upperRoomCode].scores[playerName] =
           (rooms[upperRoomCode].scores[playerName] || 0) + points;
         // Envoie le résultat individuel
+
         io.to(upperRoomCode).emit("blindtest_result", {
           playerName,
           correct: isCorrect,
@@ -443,6 +484,9 @@ io.on("connection", (socket) => {
   // Réponse d'un joueur (pour la séquence, stocke juste la réponse côté serveur)
   socket.on("blindtest_answer", ({ roomCode, playerName, answer }) => {
     const upperRoomCode = roomCode ? roomCode.toUpperCase() : null;
+    console.log(roomCode);
+    console.log(playerName);
+    console.log(answer);
     if (!upperRoomCode || !rooms[upperRoomCode]) {
       socket.emit("blindtest_result", { error: "Room not found" });
       return;
@@ -466,7 +510,7 @@ io.on("connection", (socket) => {
     if (room && room.players[socket.id]) {
       delete room.players[socket.id];
       delete room.readyPlayers[socket.id];
-      
+
       socket.leave(upperRoomCode);
       io.to(upperRoomCode).emit("room_updated", {
         hostId: room.hostId,

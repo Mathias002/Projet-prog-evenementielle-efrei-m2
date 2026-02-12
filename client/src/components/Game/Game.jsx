@@ -6,6 +6,7 @@ import "./Game.css";
 export default function Game() {
   const navigate = useNavigate();
   const { state: navState } = useLocation();
+  var myName = null;
   const [room, setRoom] = useState(() => {
     if (navState) return navState;
     try {
@@ -15,7 +16,8 @@ export default function Game() {
       return null;
     }
   });
-  const myName = room?.myName;
+
+  myName = sessionStorage.getItem("myName");
 
   const [socketId, setSocketId] = useState(socket.id);
   const [gamePhase, setGamePhase] = useState("loading"); // loading, playing, results, end
@@ -79,28 +81,33 @@ export default function Game() {
       if (audioRef.current) {
         audioRef.current.src = `http://localhost:3001${data.url}`;
         audioRef.current.volume = 0.3;
-        audioRef.current.play().catch(e => console.error("Erreur lecture audio:", e));
+        audioRef.current
+          .play()
+          .catch((e) => console.error("Erreur lecture audio:", e));
       }
 
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = setInterval(() => {
-        setTimer(prev => (prev > 0 ? prev - 1 : 0));
+        setTimer((prev) => (prev > 0 ? prev - 1 : 0));
       }, 1000);
     };
 
     const onResult = (data) => {
+      console.log("Résultat reçu:");
+      console.log(data);
       // Ignore les erreurs ou les résultats sans nom de joueur
       if (data.error || !data.playerName) return;
 
-      setRoundResults(prev => {
+      setRoundResults((prev) => {
         // Si le joueur est déjà affiché, on ne l'ajoute pas une seconde fois
-        if (prev.some(res => res.playerName === data.playerName)) return prev;
+        if (prev.some((res) => res.playerName === data.playerName)) return prev;
         return [...prev, data];
       });
     };
 
     const onRoundEnd = (data) => {
-      console.log("Fin du round:", data);
+      console.log("Fin du round:");
+      console.log(data);
       setGamePhase("results");
       setCorrectAnswer(data.correctAnswer);
       setScores(data.scores);
@@ -113,10 +120,10 @@ export default function Game() {
       setCurrentMusic(null);
       clearInterval(timerIntervalRef.current);
     };
-    
+
     const onError = (data) => {
       alert(`Erreur du jeu: ${data.error}`);
-      navigate('/lobby');
+      navigate("/lobby");
     };
 
     const onCountdown = (data) => {
@@ -157,6 +164,11 @@ export default function Game() {
     e.preventDefault();
     if (!answer.trim() || hasAnswered) return;
 
+    console.log("answer sent");
+    console.log(answer);
+    console.log("player name");
+    console.log(myName);
+
     socket.emit("blindtest_answer", {
       roomCode: room.roomCode,
       playerName: myName,
@@ -184,7 +196,7 @@ export default function Game() {
             )}
           </div>
         );
-      
+
       case "playing":
         return (
           <div className="game-phase-container playing-view">
@@ -209,20 +221,30 @@ export default function Game() {
         return (
           <div className="game-phase-container results-view">
             <h2>Résultats du round</h2>
-            <p>La bonne réponse était : <strong>{correctAnswer}</strong></p>
+            <p>
+              La bonne réponse était : <strong>{correctAnswer}</strong>
+            </p>
             <ul>
-              {roundResults.sort((a,b) => b.points - a.points).map((res, i) => (
-                <li key={i} className={res.correct ? 'correct' : 'incorrect'}>
-                  <span>{res.playerName}</span>
-                  <span>{res.correct ? `+${res.points} points` : 'Mauvaise réponse'}</span>
-                </li>
-              ))}
+              {roundResults
+                .sort((a, b) => b.points - a.points)
+                .map((res, i) => (
+                  <li key={i} className={res.correct ? "correct" : "incorrect"}>
+                    <span>{res.playerName}</span>
+                    <span>
+                      {res.correct
+                        ? `+${res.points} points`
+                        : "Mauvaise réponse"}
+                    </span>
+                  </li>
+                ))}
             </ul>
           </div>
         );
 
-      case "end":
-        { const sortedScores = Object.entries(scores).sort(([, a], [, b]) => b - a);
+      case "end": {
+        const sortedScores = Object.entries(scores).sort(
+          ([, a], [, b]) => b - a,
+        );
         return (
           <div className="game-phase-container end-screen">
             <h1>Partie terminée !</h1>
@@ -230,14 +252,17 @@ export default function Game() {
             <ol>
               {sortedScores.map(([name, score], index) => (
                 <li key={name}>
-                  <span>{index === 0 ? '🏆' : index + 1}. {name}</span>
+                  <span>
+                    {index === 0 ? "🏆" : index + 1}. {name}
+                  </span>
                   <span>{score} points</span>
                 </li>
               ))}
             </ol>
             <button onClick={returnToLobby}>Retourner au lobby</button>
           </div>
-        ); }
+        );
+      }
 
       default:
         return null;
@@ -247,12 +272,14 @@ export default function Game() {
   return (
     <div className="game-page-layout">
       <audio ref={audioRef} />
-      
+
       <div className="game-main-content">
         <div className="game-header">
           {currentMusic ? (
             <>
-              <h1>Musique {currentMusic.index}/{currentMusic.total}</h1>
+              <h1>
+                Musique {currentMusic.index}/{currentMusic.total}
+              </h1>
               <div className="timer">⏳ {timer}s</div>
             </>
           ) : (
@@ -268,11 +295,11 @@ export default function Game() {
           {Object.entries(scores)
             .sort(([, a], [, b]) => b - a)
             .map(([name, score]) => (
-            <li key={name}>
-              <span>{name}</span>
-              <span>{score}</span>
-            </li>
-          ))}
+              <li key={name}>
+                <span>{name}</span>
+                <span>{score}</span>
+              </li>
+            ))}
         </ul>
       </aside>
     </div>
