@@ -34,7 +34,8 @@ export default function Home() {
 
         // store initial room state so Lobby can access it if needed
         try {
-          sessionStorage.setItem("currentRoom", JSON.stringify(response.data));
+          const roomData = { ...response.data, myName: playerName };
+          sessionStorage.setItem("currentRoom", JSON.stringify(roomData));
         } catch (e) {
           // ignore storage errors
         }
@@ -52,7 +53,8 @@ export default function Home() {
       }
 
       try {
-        sessionStorage.setItem("currentRoom", JSON.stringify(response.data));
+        const roomData = { ...response.data, myName: playerName };
+        sessionStorage.setItem("currentRoom", JSON.stringify(roomData));
       } catch (e) {
         // ignore storage errors
       }

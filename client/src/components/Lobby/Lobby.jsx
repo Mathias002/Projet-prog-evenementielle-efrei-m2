@@ -5,6 +5,8 @@ import { socket } from "../../socket";
 export default function Lobby() {
   const { state } = useLocation();
   const navigate = useNavigate();
+  const [socketId, setSocketId] = useState(socket.id);
+  const [isConnected, setIsConnected] = useState(socket.connected);
   const [room, setRoom] = useState(() => {
     // prefer the navigation state, otherwise try sessionStorage
     if (state) return state;
@@ -16,16 +18,43 @@ export default function Lobby() {
     }
   });
 
+  // Force le re-rendu si le socket se connecte/déconnecte (pour mettre à jour socket.id)
+  useEffect(() => {
+    const onConnect = () => {
+      setSocketId(socket.id);
+      setIsConnected(true);
+    };
+    const onDisconnect = () => {
+      setSocketId(null);
+      setIsConnected(false);
+    };
+    
+    // Si déjà connecté au montage, on met à jour l'ID immédiatement
+    if (socket.connected) {
+      setSocketId(socket.id);
+      setIsConnected(true);
+    }
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+    };
+  }, []);
+
   const startGame = () => {
     if (!room?.roomCode) return;
     
     // Émet l'événement pour lancer la partie
     socket.emit("start_game", { roomCode: room.roomCode });
+    navigate("/game");
   };
 
   const toggleReady = () => {
     if (!room?.roomCode) return;
-    
+    console.log("Envoi de toggle_ready pour la room:", room.roomCode);
+    if (!socket.connected) console.warn("⚠️ Socket déconnecté !");
     // Émet l'événement pour toggle l'état prêt
     socket.emit("toggle_ready", { roomCode: room.roomCode });
   };
@@ -33,6 +62,14 @@ export default function Lobby() {
   const copyRoomCode = () => {
     navigator.clipboard.writeText(room.roomCode);
     // Tu peux ajouter un toast/notification ici
+  };
+
+  const leaveRoom = () => {
+    if (room?.roomCode) {
+      socket.emit("leave_room", room.roomCode);
+    }
+    sessionStorage.removeItem("currentRoom");
+    navigate("/");
   };
 
   // when we receive initial navigation state, persist it and set local state
@@ -50,27 +87,30 @@ export default function Lobby() {
   // listen for live updates from the server
   useEffect(() => {
     const handler = (data) => {
-      // data is expected to contain { players: { socketId: name, ... }, readyPlayers: { socketId: true/false, ... }, roomCode? }
-      const roomCode =
-        data.roomCode || room?.roomCode || state?.roomCode || null;
-      const updated = {
-        roomCode,
-        players: data.players,
-        readyPlayers: data.readyPlayers || {},
-      };
-      setRoom(updated);
-      try {
-        sessionStorage.setItem("currentRoom", JSON.stringify(updated));
-      } catch (e) {
-        /* ignore */
-      }
+      console.log("Mise à jour room reçue:", data);
+      console.log("Mon socket ID:", socket.id);
+      setRoom((prevRoom) => {
+        const updated = {
+          ...prevRoom,
+          roomCode: data.roomCode || prevRoom?.roomCode,
+          hostId: data.hostId || prevRoom?.hostId,
+          players: data.players,
+          readyPlayers: data.readyPlayers || {},
+        };
+        try {
+          sessionStorage.setItem("currentRoom", JSON.stringify(updated));
+        } catch (e) {
+          /* ignore */
+        }
+        return updated;
+      });
     };
 
     socket.on("room_updated", handler);
     return () => {
       socket.off("room_updated", handler);
     };
-  }, [room, state]);
+  }, []); // Retrait de [room, state] pour éviter les boucles de re-subscription
 
   // ✨ NOUVEAU: Écouter le démarrage de la partie
   useEffect(() => {
@@ -89,8 +129,14 @@ export default function Lobby() {
   // ✨ NOUVEAU: Gérer les réponses toggle_ready
   useEffect(() => {
     const handler = (response) => {
+      console.log("Réponse toggle_ready reçue:", response);
       if (!response.success) {
         console.error("Erreur toggle ready:", response.error);
+        if (response.error.code === "NOT_IN_ROOM" || response.error.code === "ROOM_NOT_FOUND") {
+             alert("Vous avez été déconnecté de la salle (ou la salle n'existe plus).");
+             sessionStorage.removeItem("currentRoom");
+             navigate("/");
+        }
       }
     };
 
@@ -128,6 +174,7 @@ export default function Lobby() {
     socketId,
     name,
     isReady: room.readyPlayers?.[socketId] || false,
+    isHost: room.hostId === socketId,
   }));
 
   // Calcule le nombre de joueurs prêts
@@ -136,7 +183,8 @@ export default function Lobby() {
   const allReady = readyCount === totalPlayers && totalPlayers > 0;
 
   // Détermine si le joueur actuel est prêt
-  const currentPlayerReady = room.readyPlayers?.[socket.id] || false;
+  const currentPlayerReady = room.readyPlayers?.[socketId] || room.readyPlayers?.[socket.id] || false;
+  const amIHost = room.hostId === socketId;
 
   return (
     <div style={{
@@ -166,6 +214,11 @@ export default function Lobby() {
             backgroundClip: 'text'
           }}>
             🎮 Lobby
+            {!isConnected && (
+              <span style={{ fontSize: '0.5em', color: 'red', marginLeft: '10px' }}>
+                (Déconnecté)
+              </span>
+            )}
           </h1>
         </div>
 
@@ -360,31 +413,31 @@ export default function Lobby() {
 
               <button
                 onClick={startGame}
-                disabled={!allReady}
+                disabled={!allReady || !amIHost}
                 style={{
                   width: '100%',
                   padding: '16px',
                   fontSize: '16px',
                   fontWeight: '600',
                   color: 'white',
-                  background: allReady 
+                  background: allReady && amIHost
                     ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
                     : '#d1d5db',
                   border: 'none',
                   borderRadius: '12px',
-                  cursor: allReady ? 'pointer' : 'not-allowed',
+                  cursor: allReady && amIHost ? 'pointer' : 'not-allowed',
                   transition: 'all 0.2s ease',
-                  opacity: allReady ? 1 : 0.5,
-                  boxShadow: allReady ? '0 4px 12px rgba(16, 185, 129, 0.4)' : 'none'
+                  opacity: allReady && amIHost ? 1 : 0.5,
+                  boxShadow: allReady && amIHost ? '0 4px 12px rgba(16, 185, 129, 0.4)' : 'none'
                 }}
                 onMouseEnter={(e) => {
-                  if (allReady) {
+                  if (allReady && amIHost) {
                     e.target.style.transform = 'translateY(-2px)';
                     e.target.style.boxShadow = '0 6px 20px rgba(16, 185, 129, 0.5)';
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (allReady) {
+                  if (allReady && amIHost) {
                     e.target.style.transform = 'translateY(0)';
                     e.target.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.4)';
                   }
@@ -399,7 +452,9 @@ export default function Lobby() {
               fontSize: '13px',
               color: '#9ca3af'
             }}>
-              💡 Astuce : Partagez le code de la room avec vos amis !
+              {amIHost 
+                ? "💡 Vous êtes l'hôte. Lancez la partie quand tout le monde est prêt !" 
+                : "💡 Astuce : Partagez le code de la room avec vos amis !"}
             </p>
           </div>
         </main>
@@ -447,7 +502,7 @@ export default function Lobby() {
               <div
                 key={player.socketId}
                 style={{
-                  background: index === 0 
+                  background: player.isHost 
                     ? 'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)'
                     : '#f9fafb',
                   padding: '16px',
@@ -456,7 +511,7 @@ export default function Lobby() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: '12px',
-                  border: index === 0 ? '2px solid #667eea' : '2px solid transparent',
+                  border: player.isHost ? '2px solid #667eea' : '2px solid transparent',
                   transition: 'all 0.2s ease'
                 }}
               >
@@ -465,7 +520,7 @@ export default function Lobby() {
                   width: '44px',
                   height: '44px',
                   borderRadius: '12px',
-                  background: index === 0
+                  background: player.isHost
                     ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
                     : 'linear-gradient(135deg, #a78bfa 0%, #c084fc 100%)',
                   display: 'flex',
@@ -491,7 +546,7 @@ export default function Lobby() {
                   }}>
                     {player.name}
                   </div>
-                  {index === 0 && (
+                  {player.isHost && (
                     <div style={{
                       fontSize: '12px',
                       color: '#667eea',
@@ -543,6 +598,7 @@ export default function Lobby() {
             background: '#fafafa'
           }}>
             <button
+              onClick={leaveRoom}
               style={{
                 width: '100%',
                 padding: '12px',
