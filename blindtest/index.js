@@ -358,9 +358,9 @@ io.on("connection", (socket) => {
         let points = 0;
         let isCorrect = false;
         if (answer) {
-          const normalizedAnswer = answer.trim().toLowerCase();
-          isCorrect = normalizedAnswer === correctName;
-          if (isCorrect) {
+          const normalizedAnswer = normalizeStr(answer);
+          if (acceptableAnswers.has(normalizedAnswer)) {
+            isCorrect = true;
             const elapsedSeconds = Math.floor((now - startTime) / 1000);
             points = Math.max(100 - elapsedSeconds * 10, 10);
           }
