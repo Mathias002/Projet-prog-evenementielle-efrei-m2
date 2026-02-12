@@ -26,9 +26,9 @@ socket.on("connect", () => {
       socket.emit("blindtest_answer", {
         roomCode: roomCode,
         playerName: "Alice",
-        answer: "GOOD NIGHT - Dreamcatcher",
+        answer: "GOOD NIGHT",
       });
-    }, 5000); // Répond après 5 secondes
+    }, 1000); // Répond après 5 secondes
   });
 
   socket.on("blindtest_result", (data) => {
