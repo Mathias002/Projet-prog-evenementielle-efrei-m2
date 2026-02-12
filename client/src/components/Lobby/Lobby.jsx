@@ -5,34 +5,25 @@ import { socket } from "../../socket";
 export default function Lobby() {
   const { state } = useLocation();
   const navigate = useNavigate();
+
   const [socketId, setSocketId] = useState(socket.id);
-  const [isConnected, setIsConnected] = useState(socket.connected);
+
   const [room, setRoom] = useState(() => {
-    // prefer the navigation state, otherwise try sessionStorage
     if (state) return state;
-    try {
-      const stored = sessionStorage.getItem("currentRoom");
-      return stored ? JSON.parse(stored) : null;
-    } catch (e) {
-      return null;
-    }
   });
 
   // Force le re-rendu si le socket se connecte/déconnecte (pour mettre à jour socket.id)
   useEffect(() => {
     const onConnect = () => {
       setSocketId(socket.id);
-      setIsConnected(true);
     };
     const onDisconnect = () => {
       setSocketId(null);
-      setIsConnected(false);
     };
     
     // Si déjà connecté au montage, on met à jour l'ID immédiatement
     if (socket.connected) {
       setSocketId(socket.id);
-      setIsConnected(true);
     }
 
     socket.on('connect', onConnect);
@@ -67,18 +58,12 @@ export default function Lobby() {
     if (room?.roomCode) {
       socket.emit("leave_room", room.roomCode);
     }
-    sessionStorage.removeItem("currentRoom");
     navigate("/");
   };
 
   // when we receive initial navigation state, persist it and set local state
   useEffect(() => {
     if (state) {
-      try {
-        sessionStorage.setItem("currentRoom", JSON.stringify(state));
-      } catch (e) {
-        /* ignore */
-      }
       setRoom(state);
     }
   }, [state]);
@@ -96,11 +81,6 @@ export default function Lobby() {
           players: data.players,
           readyPlayers: data.readyPlayers || {},
         };
-        try {
-          sessionStorage.setItem("currentRoom", JSON.stringify(updated));
-        } catch (e) {
-          /* ignore */
-        }
         return updated;
       });
     };
@@ -111,7 +91,7 @@ export default function Lobby() {
     };
   }, []); // Retrait de [room, state] pour éviter les boucles de re-subscription
 
-  // ✨ NOUVEAU: Écouter le démarrage de la partie
+  // Écouter le démarrage de la partie
   useEffect(() => {
     const handler = (data) => {
       console.log("🎮 La partie commence !", data);
@@ -125,7 +105,7 @@ export default function Lobby() {
     };
   }, [navigate, room]);
 
-  // ✨ NOUVEAU: Gérer les réponses toggle_ready
+  // Gérer les réponses toggle_ready
   useEffect(() => {
     const handler = (response) => {
       console.log("Réponse toggle_ready reçue:", response);
@@ -133,7 +113,6 @@ export default function Lobby() {
         console.error("Erreur toggle ready:", response.error);
         if (response.error.code === "NOT_IN_ROOM" || response.error.code === "ROOM_NOT_FOUND") {
              alert("Vous avez été déconnecté de la salle (ou la salle n'existe plus).");
-             sessionStorage.removeItem("currentRoom");
              navigate("/");
         }
       }
@@ -145,7 +124,7 @@ export default function Lobby() {
     };
   }, []);
 
-  // ✨ NOUVEAU: Gérer les réponses start_game
+  // Gérer les réponses start_game
   useEffect(() => {
     const handler = (response) => {
       if (!response.success) {
@@ -169,21 +148,25 @@ export default function Lobby() {
   }
 
   // Récupère les données des joueurs
-  const players = Object.entries(room.players || {}).map(([socketId, name]) => ({
-    socketId,
-    name,
-    isReady: room.readyPlayers?.[socketId] || false,
-    isHost: room.hostId === socketId,
+  const players = Object.entries(room.players || {}).map(([userId, name, online]) => ({
+    id: userId, // On utilise l'ID persistant
+    name: name,
+    // On vérifie le statut "ready" via l'ID persistant
+    isReady: room.readyPlayers?.[userId] || false, 
+    // L'hôte est maintenant aussi défini par son ID persistant
+    isHost: room.hostId === userId,
+    isOnline: online !== false
   }));
+
+  console.log(players);
 
   // Calcule le nombre de joueurs prêts
   const readyCount = players.filter((p) => p.isReady).length;
   const totalPlayers = players.length;
   const allReady = readyCount === totalPlayers && totalPlayers > 0;
 
-  // Détermine si le joueur actuel est prêt
-  const currentPlayerReady = room.readyPlayers?.[socketId] || room.readyPlayers?.[socket.id] || false;
-  const amIHost = room.hostId === socketId;
+  const currentPlayerReady = room.readyPlayers?.[socket.sessionID] || false;
+  const amIHost = room.hostId === socket.sessionID;
 
   return (
     <div style={{
@@ -213,11 +196,6 @@ export default function Lobby() {
             backgroundClip: 'text'
           }}>
             🎮 Lobby
-            {!isConnected && (
-              <span style={{ fontSize: '0.5em', color: 'red', marginLeft: '10px' }}>
-                (Déconnecté)
-              </span>
-            )}
           </h1>
         </div>
 
@@ -497,96 +475,139 @@ export default function Lobby() {
             overflowY: 'auto',
             padding: '16px'
           }}>
-            {players.map((player, index) => (
-              <div
-                key={player.socketId}
-                style={{
-                  background: player.isHost 
-                    ? 'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)'
-                    : '#f9fafb',
-                  padding: '16px',
-                  borderRadius: '12px',
-                  marginBottom: '12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  border: player.isHost ? '2px solid #667eea' : '2px solid transparent',
-                  transition: 'all 0.2s ease'
-                }}
-              >
-                {/* Avatar */}
-                <div style={{
-                  width: '44px',
-                  height: '44px',
-                  borderRadius: '12px',
-                  background: player.isHost
-                    ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-                    : 'linear-gradient(135deg, #a78bfa 0%, #c084fc 100%)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '20px',
-                  fontWeight: '700',
-                  color: 'white',
-                  flexShrink: 0
-                }}>
-                  {player.name.charAt(0).toUpperCase()}
-                </div>
-
-                {/* Info joueur */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: '15px',
-                    fontWeight: '600',
-                    color: '#1f2937',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap'
-                  }}>
-                    {player.name}
-                  </div>
-                  {player.isHost && (
-                    <div style={{
-                      fontSize: '12px',
-                      color: '#667eea',
-                      fontWeight: '600',
-                      marginTop: '2px'
-                    }}>
-                      👑 Hôte
-                    </div>
-                  )}
-                </div>
-
-                {/* Status indicator - UPDATED avec état prêt */}
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}>
-                  {player.isReady && (
-                    <span style={{
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      color: '#10b981',
-                      background: 'rgba(16, 185, 129, 0.1)',
-                      padding: '4px 8px',
-                      borderRadius: '6px'
-                    }}>
-                      ✓ Prêt
-                    </span>
-                  )}
-                  <div style={{
-                    width: '10px',
-                    height: '10px',
-                    borderRadius: '50%',
-                    background: player.isReady ? '#10b981' : '#fbbf24',
-                    boxShadow: player.isReady 
-                      ? '0 0 8px rgba(16, 185, 129, 0.6)'
-                      : '0 0 8px rgba(251, 191, 36, 0.6)',
-                    flexShrink: 0
-                  }} />
-                </div>
+          {players.map((player) => (
+            <div
+              key={player.id}
+              style={{
+                // Opacité réduite si hors ligne
+                opacity: player.isOnline ? 1 : 0.5,
+                // Filtre grisâtre pour accentuer l'effet (optionnel)
+                filter: player.isOnline ? 'none' : 'grayscale(80%)',
+                
+                background: player.isHost
+                  ? 'linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%)'
+                  : '#f9fafb',
+                padding: '16px',
+                borderRadius: '12px',
+                marginBottom: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                border: player.isHost ? '2px solid #667eea' : '2px solid transparent',
+                transition: 'all 0.3s ease'
+              }}
+            >
+              {/* Avatar */}
+              <div style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '12px',
+                background: player.isHost
+                  ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+                  : 'linear-gradient(135deg, #a78bfa 0%, #c084fc 100%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '20px',
+                fontWeight: '700',
+                color: 'white',
+                flexShrink: 0
+              }}>
+                {player.name.charAt(0).toUpperCase()}
               </div>
+
+              {/* Info joueur */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: '15px',
+                  fontWeight: '600',
+                  color: '#1f2937',
+                  display: 'flex', 
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {player.name}
+                  </span>
+                  
+                  {/* Petit tag (Déco) à côté du nom */}
+                  {!player.isOnline && (
+                      <span style={{
+                          fontSize: '11px',
+                          color: '#ef4444', // Rouge
+                          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          whiteSpace: 'nowrap'
+                      }}>
+                          ⚠️ Déco
+                      </span>
+                  )}
+                </div>
+
+                {player.isHost && (
+                  <div style={{
+                    fontSize: '12px',
+                    color: '#667eea',
+                    fontWeight: '600',
+                    marginTop: '2px'
+                  }}>
+                    👑 Hôte
+                  </div>
+                )}
+              </div>
+
+              {/* Status indicator - (Online vs Offline) */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                {/* Cas 1: Joueur en ligne et Prêt */}
+                {player.isOnline && player.isReady && (
+                  <span style={{
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    color: '#10b981',
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    padding: '4px 8px',
+                    borderRadius: '6px'
+                  }}>
+                    ✓ Prêt
+                  </span>
+                )}
+
+                {/* Cas 2: Joueur Hors ligne (Remplace le statut prêt) */}
+                {!player.isOnline && (
+                  <span style={{
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      color: '#6b7280', // Gris
+                      fontStyle: 'italic'
+                    }}>
+                      Attente...
+                    </span>
+                )}
+
+                {/* La Bulle (Dot) */}
+                <div style={{
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '50%',
+                  // Si hors ligne : Gris (ou Rouge), Si Prêt : Vert, Sinon : Jaune
+                  background: !player.isOnline 
+                      ? '#9ca3af' // Gris si hors ligne
+                      : (player.isReady ? '#10b981' : '#fbbf24'),
+                  boxShadow: !player.isOnline 
+                      ? 'none'
+                      : (player.isReady 
+                          ? '0 0 8px rgba(16, 185, 129, 0.6)' 
+                          : '0 0 8px rgba(251, 191, 36, 0.6)'),
+                  transition: 'background-color 0.3s ease',
+                  flexShrink: 0
+                }} />
+              </div>
+            </div>
             ))}
           </div>
 
