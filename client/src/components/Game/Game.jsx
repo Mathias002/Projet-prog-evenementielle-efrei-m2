@@ -57,16 +57,16 @@ export default function Game() {
   // L'hôte lance la séquence de jeu
   useEffect(() => {
     if (room?.roomCode && socketId) {
-    if (room?.roomCode && socketId && !gameStartedRef.current) {
-      const amIHost = room.hostId === socketId;
-      if (amIHost) {
-        gameStartedRef.current = true; // Marque comme lancé
-        console.log("Je suis l'hôte, je lance blindtest_game_start");
-        socket.emit("blindtest_game_start", { roomCode: room.roomCode });
+      if (room?.roomCode && socketId && !gameStartedRef.current) {
+        const amIHost = room.hostId === socketId;
+        if (amIHost) {
+          gameStartedRef.current = true; // Marque comme lancé
+          console.log("Je suis l'hôte, je lance blindtest_game_start");
+          socket.emit("blindtest_game_start", { roomCode: room.roomCode });
+        }
       }
     }
-  }}, [room?.roomCode, room?.hostId, socketId]);
-  
+  }, [room?.roomCode, room?.hostId, socketId]);
 
   // Écouteurs d'événements du jeu
   useEffect(() => {
@@ -124,6 +124,7 @@ export default function Game() {
     };
 
     const onError = (data) => {
+      console.log(data);
       alert(`Erreur du jeu: ${data.error}`);
       navigate("/lobby");
     };
