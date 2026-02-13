@@ -30,15 +30,15 @@ export function getUserId() {
 
 let sessionID = getUserId();
 
-// CONNEXION : On envoie l'ID dans l'objet 'auth'
+// On envoie l'ID dans l'objet 'auth'
 export const socket = io("http://localhost:3001", {
   auth: {
-    sessionID: sessionID, // C'est ici que la magie opère
+    sessionID: sessionID,
   },
 });
 
 socket.sessionID = sessionID;
 
-socket.on("connect", () => {
-  console.log(`Connecté avec le socket ID temporaire : ${socket.id}`);
-});
+// socket.on("connect", () => {
+//   console.log(`Connecté avec le socket ID temporaire : ${socket.id}`);
+// });
