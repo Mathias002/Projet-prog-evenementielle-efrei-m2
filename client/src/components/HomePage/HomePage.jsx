@@ -11,6 +11,7 @@ export default function Home() {
 
   const createRoom = () => {
     setError(null);
+    sessionStorage.setItem("myName", playerName);
     socket.emit("create_room", { playerName });
   };
 
@@ -18,6 +19,7 @@ export default function Home() {
     console.log("join");
     console.log(roomName);
     console.log(playerName);
+    sessionStorage.setItem("myName", playerName);
     setError(null);
     socket.emit("join_room", { roomName, playerName });
   };
@@ -37,17 +39,15 @@ export default function Home() {
       });
 
     // Handle join room responses (navigate to lobby on success)
-    socket
-      .off("join_room_response")
-      .on("join_room_response", (response) => {
-        if (!response.success) {
-          setError(response.error.message);
-          return;
-        }
+    socket.off("join_room_response").on("join_room_response", (response) => {
+      if (!response.success) {
+        setError(response.error.message);
+        return;
+      }
 
-        navigate("/lobby", {
-          state: response.data,
-        });
+      navigate("/lobby", {
+        state: response.data,
+      });
     });
 
     // cleanup on unmount

@@ -7,13 +7,13 @@ export default function Game() {
   const navigate = useNavigate();
   const { state: navState } = useLocation();
 
-  var myName = null;
+  var myName = sessionStorage.getItem("myName");
 
   const [room] = useState(() => {
     if (navState) return navState;
   });
 
-  const [socketId, setSocketId] = useState(socket.id);
+  const [socketId, setSocketId] = useState(socket.sessionID);
   const [gamePhase, setGamePhase] = useState("loading"); // loading, playing, results, end
   const [currentMusic, setCurrentMusic] = useState(null);
   const [scores, setScores] = useState(() => {
@@ -36,7 +36,7 @@ export default function Game() {
   const [startCountdown, setStartCountdown] = useState(null);
 
   useEffect(() => {
-    const onConnect = () => setSocketId(socket.id);
+    const onConnect = () => setSocketId(socket.sessionID);
     const onDisconnect = () => setSocketId(null);
     if (socket.connected) onConnect();
 

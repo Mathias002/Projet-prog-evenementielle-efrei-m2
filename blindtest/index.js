@@ -643,8 +643,12 @@ io.on("connection", (socket) => {
   socket.on("blindtest_answer", ({ roomCode, answer }) => {
     const upperRoomCode = roomCode.toUpperCase();
     const room = rooms[upperRoomCode];
-    const playerSocketId = socket.id;
+    const playerSocketId = socket.sessionID;
     const playerName = room.players[playerSocketId];
+
+    // log("INFO", "room : ", room);
+    // log("INFO", "playerName : ", playerName);
+    // log("INFO", "room.currentMusic : ", room.currentMusic);
 
     if (!room || !playerName || !room.currentMusic) {
       socket.emit("blindtest_error", { message: "Cannot submit answer." });
