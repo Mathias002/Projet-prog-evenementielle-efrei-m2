@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const Store = require("./store");
 
 const app = express();
 app.use(cors());
@@ -14,33 +15,44 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
+    // methods: ["GET", "POST"],
   },
 });
 
-const rooms = {};
+// --- VARIABLES EN RAM ---
+// const rooms = {}; // SUPPRIMÉ (Géré par Redis)
+// const activeUsers = new Map(); // SUPPRIMÉ (Géré par Redis)
+// const userRooms = new Map(); // SUPPRIMÉ (Géré par Redis)
 
-const users = new Map();
+// Stocke les liens temporaires vers les fichiers audio (ID -> Nom du fichier)
+const activeStreams = new Map();
 
-// Helper to get all audio files
+// Stocke les timeouts de suppression
+const disconnectTimeouts = new Map();
+
+// Permet de récupérer les fichiers mp3 dans le dossier `audio`
 function getAudioFiles() {
   const audioDir = path.join(__dirname, "audio");
   return fs.readdirSync(audioDir).filter((file) => file.endsWith(".mp3"));
 }
 
-// Génère un identifiant unique pour chaque musique lancée
+// unique id pour music
 function generateMusicId() {
   return Math.random().toString(36).substring(2, 10);
 }
 
+// Permet de générer un code aléatoire pour les rooms
 function generateRoomCode() {
   return Math.random().toString(36).substring(2, 6).toUpperCase();
 }
 
+// Permet de styliser les logs dans le terminal du server
 function log(type, message, data = null) {
   const time = new Date().toISOString();
   console.log(`[${time}] [${type}] ${message}`, data ? data : "");
 }
 
+// Permet de valider le pseudo renseigner pas l'utilisateur
 function validatePlayerName(name) {
   if (!name) return "EMPTY_NAME";
   if (name.length < 3) return "NAME_TOO_SHORT";
@@ -48,165 +60,67 @@ function validatePlayerName(name) {
   return null;
 }
 
-io.on("connection", (socket) => {
-  console.log("🟢 Nouveau client connecté :", socket.id);
+io.use((socket, next) => {
+  const sessionID = socket.handshake.auth.sessionID;
 
-  socket.on("join_room", ({ roomName, playerName }) => {
-    const room = rooms[roomName];
+  if (sessionID) {
+    // On attache le sessionID à l'objet socket pour pouvoir l'utiliser plus tard
+    socket.sessionID = sessionID;
+    return next();
+  }
 
-    if (!room) {
-      socket.emit("join_room_response", {
-        success: false,
-        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
-      });
-      return;
-    }
+  // Si pas d'ID, on refuse la connexion (optionnel)
+  return next(new Error("Authentification invalide"));
+});
 
-    const errorCode = validatePlayerName(playerName);
-    if (errorCode) {
-      socket.emit("join_room_response", {
-        success: false,
-        error: {
-          code: errorCode,
-          message: "Pseudo invalide (3 à 15 caractères)",
-        },
-      });
-      return;
-    }
+io.on("connection", async (socket) => {
+  log("INFO", "🟢 Nouveau client connecté :", socket.id);
 
-    // Enregistre le joueur sous son socket id (conserve les autres joueurs)
-    room.players[socket.id] = playerName;
-    // Initialise l'état prêt à false pour le nouveau joueur
-    room.readyPlayers[socket.id] = false;
-    socket.join(roomName);
+  // Initialisation du sessionID depuis le socket
+  const sID = socket.sessionID;
 
-    // Informe tous les clients dans la room de la mise à jour
-    io.to(roomName).emit("room_updated", {
-      players: room.players,
-      readyPlayers: room.readyPlayers,
-    });
+  // Annulation de la suppression si le joueur reviens après le délai
+  if (disconnectTimeouts.has(sID)) {
+    log("INFO", `${sID} est revenu à temps.`);
+    clearTimeout(disconnectTimeouts.get(sID));
+    disconnectTimeouts.delete(sID);
+  }
 
-    // Répond au client qui vient de rejoindre pour qu'il puisse naviguer/mettre à jour son état
-    socket.emit("join_room_response", {
-      success: true,
-      data: {
-        roomCode: roomName,
-        players: room.players,
-        readyPlayers: room.readyPlayers,
-      },
-    });
+  // --- RECONNEXION AUTOMATIQUE (REDIS) ---
+  // On récupère la liste des rooms depuis Redis
+  const myRooms = await Store.getUserRooms(sID);
 
-    console.log(`👤 ${playerName} a rejoint ${roomName}`);
-  });
+  if (myRooms && myRooms.length > 0) {
+    // On boucle avec Promise.all pour gérer l'async proprement
+    await Promise.all(
+      myRooms.map(async (roomCode) => {
+        const room = await Store.getRoom(roomCode); // Récup depuis Redis
 
-  // ✨ NOUVEAU: Gérer l'état "prêt" d'un joueur
-  socket.on("toggle_ready", ({ roomCode }) => {
-    const room = rooms[roomCode];
+        if (room && room.players[sID]) {
+          // Mise à jour locale
+          room.players[sID].online = true;
 
-    if (!room) {
-      socket.emit("toggle_ready_response", {
-        success: false,
-        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
-      });
-      return;
-    }
+          // SAUVEGARDE REDIS
+          await Store.saveRoom(roomCode, room);
 
-    if (!room.players[socket.id]) {
-      socket.emit("toggle_ready_response", {
-        success: false,
-        error: {
-          code: "NOT_IN_ROOM",
-          message: "Vous n'êtes pas dans cette room",
-        },
-      });
-      return;
-    }
+          socket.join(roomCode);
 
-    // Toggle l'état prêt du joueur
-    room.readyPlayers[socket.id] = !room.readyPlayers[socket.id];
-
-    const playerName = room.players[socket.id];
-    const isReady = room.readyPlayers[socket.id];
-
-    log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, {
-      roomCode,
-    });
-
-    // Envoie la mise à jour à tous les joueurs de la room
-    io.to(roomCode).emit("room_updated", {
-      players: room.players,
-      readyPlayers: room.readyPlayers,
-    });
-
-    socket.emit("toggle_ready_response", {
-      success: true,
-      data: { isReady },
-    });
-  });
-
-  // ✨ NOUVEAU: Lancer la partie (uniquement si tous sont prêts)
-  socket.on("start_game", ({ roomCode }) => {
-    const room = rooms[roomCode];
-
-    if (!room) {
-      socket.emit("start_game_response", {
-        success: false,
-        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
-      });
-      return;
-    }
-
-    // Vérifie que tous les joueurs sont prêts
-    const allPlayers = Object.keys(room.players);
-    const allReady = allPlayers.every(
-      (socketId) => room.readyPlayers[socketId] === true,
-    );
-
-    if (!allReady) {
-      socket.emit("start_game_response", {
-        success: false,
-        error: {
-          code: "NOT_ALL_READY",
-          message: "Tous les joueurs doivent être prêts",
-        },
-      });
-      return;
-    }
-
-    log("SUCCESS", "Lancement de la partie", { roomCode });
-
-    // Informe tous les joueurs que la partie commence
-    io.to(roomCode).emit("game_started", {
-      roomCode,
-      players: room.players,
-    });
-  });
-
-  socket.on("disconnect", () => {
-    for (const roomCode in rooms) {
-      const room = rooms[roomCode];
-
-      if (room.players[socket.id]) {
-        const playerName = room.players[socket.id];
-        delete room.players[socket.id];
-        delete room.readyPlayers[socket.id];
-
-        io.to(roomCode).emit("room_updated", {
-          players: room.players,
-          readyPlayers: room.readyPlayers,
-        });
-
-        log("INFO", `${playerName} a quitté ${roomCode}`);
-
-        if (Object.keys(room.players).length === 0) {
-          delete rooms[roomCode];
-          console.log(`❌ Room supprimée : ${roomCode}`);
+          socket.emit("room_updated", {
+            roomCode: roomCode,
+            hostId: room.hostId,
+            players: room.players,
+            readyPlayers: room.readyPlayers,
+          });
+          log("INFO", `🔄 Restauration état room ${roomCode} pour ${sID}`);
         }
-      }
-    }
-  });
+      }),
+    );
+  }
 
-  socket.on("create_room", ({ playerName }) => {
+  // Mappe sessionID -> socketID dans Redis
+  await Store.saveSessionSocket(sID, socket.id);
+
+  socket.on("create_room", async ({ playerName }) => {
     log("INFO", "Demande création de room", { socketId: socket.id });
 
     const errorCode = validatePlayerName(playerName);
@@ -226,18 +140,27 @@ io.on("connection", (socket) => {
 
     const roomCode = generateRoomCode();
 
-    rooms[roomCode] = {
+    // structure de l'objet room à améliorer
+    const newRoom = {
+      hostId: socket.sessionID,
       players: {
-        [socket.id]: playerName,
+        [socket.sessionID]: playerName,
       },
       readyPlayers: {
-        [socket.id]: false, // Le créateur n'est pas prêt par défaut
+        [socket.sessionID]: false, // Le créateur n'est pas prêt par défaut
       },
       createdAt: Date.now(),
       scores: {},
       currentMusic: null,
       musicStartTime: null,
     };
+
+    // On sauvegarde l'info pour le prochain refresh
+    // if (!userRooms.has(sID)) userRooms.set(sID, new Set());
+
+    // SAUVEGARDE REDIS
+    await Store.saveRoom(roomCode, newRoom);
+    await Store.addUserToRoomList(sID, roomCode);
 
     socket.join(roomCode);
 
@@ -250,9 +173,310 @@ io.on("connection", (socket) => {
       success: true,
       data: {
         roomCode,
-        players: rooms[roomCode].players,
-        readyPlayers: rooms[roomCode].readyPlayers,
+        hostId: socket.sessionID,
+        players: newRoom.players,
+        readyPlayers: newRoom.readyPlayers,
       },
+    });
+  });
+
+  socket.on("join_room", async ({ roomName, playerName }) => {
+    const upperRoomCode = roomName.toUpperCase();
+
+    // REDIS GET
+    const room = await Store.getRoom(upperRoomCode);
+
+    if (!room) {
+      socket.emit("join_room_response", {
+        success: false,
+        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
+      });
+      return;
+    }
+
+    const errorCode = validatePlayerName(playerName);
+    if (errorCode) {
+      socket.emit("join_room_response", {
+        success: false,
+        error: {
+          code: errorCode,
+          message: "Pseudo invalide (3 à 15 caractères)",
+        },
+      });
+      return;
+    }
+
+    // Ajouter user à la liste de la room dans Redis
+    await Store.addUserToRoomList(sID, upperRoomCode);
+
+    // Modifier la room
+    room.players[socket.sessionID] = { name: playerName, online: true };
+    room.readyPlayers[socket.sessionID] = false;
+
+    // SAUVEGARDE REDIS
+    await Store.saveRoom(upperRoomCode, room);
+
+    // // On sauvegarde l'info pour le prochain refresh
+    // if (!userRooms.has(sID)) userRooms.set(sID, new Set());
+
+    // userRooms.get(sID).add(upperRoomCode);
+
+    // // Enregistre le joueur sous son sessionID
+    // room.players[socket.sessionID] = playerName;
+
+    // room.players[socket.sessionID].online = true;
+
+    // if (!room.readyPlayers) room.readyPlayers = {};
+
+    // // Initialise l'état prêt à false pour le nouveau joueur
+    // if (room.readyPlayers[socket.sessionID] === undefined) {
+    //   room.readyPlayers[socket.sessionID] = false;
+    // }
+
+    socket.join(upperRoomCode);
+
+    io.to(upperRoomCode).emit("room_updated", {
+      hostId: room.hostId,
+      players: room.players,
+      readyPlayers: room.readyPlayers,
+    });
+
+    socket.emit("join_room_response", {
+      success: true,
+      data: {
+        roomCode: upperRoomCode,
+        hostId: room.hostId,
+        players: room.players,
+        readyPlayers: room.readyPlayers,
+      },
+    });
+
+    log("INFO", `👤 ${playerName} a rejoint ${upperRoomCode}`);
+  });
+
+  // Gérer l'état "prêt" d'un joueur
+  socket.on("toggle_ready", async ({ roomCode }) => {
+    const upperRoomCode = roomCode.toUpperCase();
+    // const room = rooms[upperRoomCode];
+
+    // REDIS GET
+    const room = await Store.getRoom(upperRoomCode);
+
+    if (!room) {
+      socket.emit("toggle_ready_response", {
+        success: false,
+        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
+      });
+      return;
+    }
+
+    const userId = socket.sessionID;
+
+    if (!room.players[userId]) {
+      socket.emit("toggle_ready_response", {
+        success: false,
+        error: {
+          code: "NOT_IN_ROOM",
+          message: "Vous n'êtes pas dans cette room",
+        },
+      });
+      return;
+    }
+
+    // if (!room.readyPlayers) room.readyPlayers = {};
+
+    // // Toggle l'état prêt du joueur
+    // room.readyPlayers[userId] = !room.readyPlayers[userId];
+
+    // const playerName = room.players[userId];
+    // const isReady = room.readyPlayers[userId];
+
+    // Toggle état
+    room.readyPlayers[userId] = !room.readyPlayers[userId];
+
+    // SAUVEGARDE REDIS
+    await Store.saveRoom(upperRoomCode, room);
+
+    const playerName = room.players[userId].name;
+    const isReady = room.readyPlayers[userId];
+
+    log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, {
+      roomCode: upperRoomCode,
+    });
+
+    // update tous les joueurs de la room
+    io.to(upperRoomCode).emit("room_updated", {
+      hostId: room.hostId,
+      players: room.players,
+      readyPlayers: room.readyPlayers,
+    });
+
+    socket.emit("toggle_ready_response", {
+      success: true,
+      data: { isReady },
+    });
+  });
+
+  socket.on("leave_room", (roomCode) => {
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
+    const userId = socket.sessionID;
+
+    if (room && room.players[userId]) {
+      delete room.players[userId];
+      delete room.readyPlayers[userId];
+
+      socket.leave(upperRoomCode);
+
+      if (room.hostId === sID) {
+        const remainingIds = Object.keys(room.players);
+        if (remainingIds.length > 0) {
+          // On nomme le premier joueur restant comme nouvel hôte
+          room.hostId = remainingIds[0];
+          log("INFO", `Nouvel hôte pour ${roomCode} : ${room.hostId}`);
+        } else {
+          // Si plus personne on supprime la room
+          delete rooms[roomCode];
+          log("INFO", `Room ${roomCode} supprimée (vide)`);
+          return;
+        }
+      }
+
+      io.to(upperRoomCode).emit("room_updated", {
+        hostId: room.hostId,
+        players: room.players,
+        readyPlayers: room.readyPlayers,
+      });
+
+      // Si plus de joueur dans la room on la supprime
+      if (Object.keys(room.players).length === 0) {
+        delete rooms[upperRoomCode];
+        log("INFO", `❌ Room supprimée (vide) : ${upperRoomCode}`);
+      }
+    }
+  });
+
+  socket.emit("connected", { socketId: socket.id });
+
+  socket.on("disconnect", async (reason) => {
+    log("INFO", `🔴 Déconnexion de ${sID} (Raison: ${reason})`);
+
+    // On lance le compte à rebours de xx secondes
+    const timeout = setTimeout(async () => {
+      // <--- ASYNC DANS LE TIMEOUT
+      log("INFO", `🗑️ Suppression définitive de ${sID}`);
+
+      // Récupérer les rooms de l'utilisateur depuis Redis
+      const userRoomsList = await Store.getUserRooms(sID);
+
+      if (userRoomsList && userRoomsList.length > 0) {
+        // Pour chaque room : mettre le joueur hors ligne ou le supprimer
+        await Promise.all(
+          userRoomsList.map(async (roomCode) => {
+            const room = await Store.getRoom(roomCode);
+            if (!room) return;
+
+            // Supprimer le joueur
+            delete room.players[sID];
+            delete room.readyPlayers[sID];
+
+            // Gérer le changement de host
+            if (room.hostId === sID) {
+              const remainingIds = Object.keys(room.players);
+              if (remainingIds.length > 0) {
+                room.hostId = remainingIds[0];
+              } else {
+                // Plus personne : supprimer la room de Redis
+                await Store.deleteRoom(roomCode);
+                return;
+              }
+            }
+
+            // Si encore du monde, on met à jour la room
+            if (Object.keys(room.players).length > 0) {
+              await Store.saveRoom(roomCode, room);
+              io.to(roomCode).emit("room_updated", {
+                /* ... */
+              });
+            } else {
+              // Sécurité double check : supprimer room vide
+              await Store.deleteRoom(roomCode);
+            }
+
+            // Supprimer le lien user -> room
+            await Store.removeUserFromRoomList(sID, roomCode);
+          }),
+        );
+      }
+
+      // Nettoyage final Redis
+      await Store.deleteUserRooms(sID);
+      await Store.deleteSessionSocket(sID);
+      disconnectTimeouts.delete(sID);
+    }, 10000);
+
+    // stocke le timeout pour pouvoir l'annuler si le joueur revient
+    disconnectTimeouts.set(sID, timeout);
+  });
+
+  // Route pour streamer l'audio
+  app.get("/blindtest/audio/stream/:id", (req, res) => {
+    const musicId = req.params.id;
+    const fileName = activeStreams.get(musicId);
+
+    if (!fileName) {
+      return res.status(404).send("Lien expiré ou invalide");
+    }
+
+    const filePath = path.join(__dirname, "audio", fileName);
+
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      res.writeHead(200, {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": stat.size,
+      });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.status(404).send("Fichier introuvable");
+    }
+  });
+
+  // Lancer la partie (uniquement si tous sont prêts)
+  socket.on("start_game", ({ roomCode }) => {
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
+
+    if (!room) {
+      socket.emit("start_game_response", {
+        success: false,
+        error: { code: "ROOM_NOT_FOUND", message: "Room introuvable" },
+      });
+      return;
+    }
+
+    const allPlayers = Object.keys(room.players);
+    const allReady = allPlayers.every(
+      (socketId) => room.readyPlayers[socketId] === true,
+    );
+
+    if (!allReady) {
+      socket.emit("start_game_response", {
+        success: false,
+        error: {
+          code: "NOT_ALL_READY",
+          message: "Tous les joueurs doivent être prêts",
+        },
+      });
+      return;
+    }
+
+    log("SUCCESS", "Lancement de la partie", { roomCode: upperRoomCode });
+
+    // game start emit
+    io.to(upperRoomCode).emit("game_started", {
+      roomCode: upperRoomCode,
+      players: room.players,
     });
   });
 
@@ -260,33 +484,38 @@ io.on("connection", (socket) => {
 
   // Lancer une séquence de 10 musiques (événement de démarrage du jeu)
   socket.on("blindtest_game_start", async ({ roomCode }) => {
-    if (!roomCode || !rooms[roomCode]) {
+    const upperRoomCode = roomCode ? roomCode.toUpperCase() : null;
+    if (!upperRoomCode || !rooms[upperRoomCode]) {
       socket.emit("blindtest_error", { error: "Room not found" });
       return;
     }
     const audioFiles = getAudioFiles();
     if (audioFiles.length < 10) {
-      io.to(roomCode).emit("blindtest_error", {
+      io.to(upperRoomCode).emit("blindtest_error", {
         error: "Not enough audio files (need at least 10)",
       });
       return;
     }
 
-    // Mélange et sélectionne 10 musiques
     const shuffled = audioFiles.sort(() => 0.5 - Math.random());
     const sequence = shuffled.slice(0, 10);
 
-    rooms[roomCode].blindtestSequence = sequence;
-    rooms[roomCode].blindtestIndex = 0;
-    rooms[roomCode].scores = {};
-    rooms[roomCode].answers = {}; // Pour stocker les réponses des joueurs à chaque musique
+    rooms[upperRoomCode].blindtestSequence = sequence;
+    rooms[upperRoomCode].blindtestIndex = 0;
+    rooms[upperRoomCode].scores = {};
+    rooms[upperRoomCode].answers = {};
 
-    // Fonction pour lancer chaque musique et attendre les réponses
+    for (const socketId in rooms[upperRoomCode].players) {
+      const playerName = rooms[upperRoomCode].players[socketId];
+      rooms[upperRoomCode].scores[playerName] = 0;
+    }
+
+    // func lancer musique puis attendre réponses
     const launchMusic = async (index) => {
       if (index >= sequence.length) {
-        // Fin du jeu
-        io.to(roomCode).emit("blindtest_game_end", {
-          scores: rooms[roomCode].scores,
+        // fin du jeu
+        io.to(upperRoomCode).emit("blindtest_game_end", {
+          scores: rooms[upperRoomCode].scores,
         });
         return;
       }
@@ -294,176 +523,198 @@ io.on("connection", (socket) => {
       const chosenFile = sequence[index];
       const musicId = generateMusicId();
 
-      rooms[roomCode].currentMusic = {
+      activeStreams.set(musicId, chosenFile);
+      // Nettoyage de sécurité après 20 secondes (le tour dure 15s + pauses)
+      setTimeout(() => {
+        activeStreams.delete(musicId);
+      }, 20000);
+
+      rooms[upperRoomCode].currentMusic = {
         id: musicId,
         filename: chosenFile,
       };
-      rooms[roomCode].musicStartTime = Date.now();
-      rooms[roomCode].answers = {}; // Reset les réponses pour cette musique
+      rooms[upperRoomCode].musicStartTime = Date.now();
+      rooms[upperRoomCode].answers = {};
+      rooms[upperRoomCode].answeredPlayers = new Set();
 
-      io.to(roomCode).emit("blindtest_music", {
+      io.to(upperRoomCode).emit("blindtest_music", {
         musicId: musicId,
         url: `/blindtest/audio/stream/${musicId}`,
-        startTime: rooms[roomCode].musicStartTime,
+        startTime: rooms[upperRoomCode].musicStartTime,
         index: index + 1,
         total: sequence.length,
       });
 
-      // Attend 30 secondes ou jusqu'à ce que tous les joueurs aient répondu
-      let timeoutReached = false;
-      const players = Object.values(rooms[roomCode].players);
-
-      const waitForAnswers = () =>
-        new Promise((resolve) => {
-          const timer = setTimeout(() => {
-            timeoutReached = true;
-            cleanup();
-            resolve();
-          }, 30000);
-
-          // Ecoute les réponses
-          const answerListener = ({ roomCode: rc, playerName, answer }) => {
-            if (rc !== roomCode) return;
-            if (!rooms[roomCode].answers) rooms[roomCode].answers = {};
-            if (!rooms[roomCode].answers[playerName]) {
-              rooms[roomCode].answers[playerName] = answer;
-            }
-            // Si tous les joueurs ont répondu, on arrête le timer
-            if (
-              Object.keys(rooms[roomCode].answers).length === players.length &&
-              !timeoutReached
-            ) {
-              clearTimeout(timer);
-              cleanup();
-              resolve();
-            }
-          };
-
-          function cleanup() {
-            socket.removeListener("blindtest_answer", answerListener);
-          }
-
-          socket.on("blindtest_answer", answerListener);
-        });
-
-      await waitForAnswers();
-
-      // Calcul des scores pour cette musique
-      const baseName = chosenFile.replace(/\.mp3$/i, "").trim();
-
-      // Normaliser une chaîne : supprimer accents, ponctuation (sauf lettres/nombres/espaces), mettre en minuscule et compacter les espaces
+      // normalisation : supprimer accents, ponctuation (sauf lettres/nombres/espaces), mettre en minuscule et compacter les espaces
       function normalizeStr(str) {
         if (!str) return "";
-        return str
-          .normalize("NFD")
-          .replace(/\p{Diacritic}/gu, "") // enlève les accents
-          .toLowerCase()
-          .replace(/[^\p{L}\p{N}\s]/gu, "") // garde seulement lettres/nombres/espaces
-          .replace(/\s+/g, " ")
-          .trim();
+        return (
+          str
+            .normalize("NFD")
+            .replace(/\p{Diacritic}/gu, "") // Enlève les accents
+            .toLowerCase()
+            // ^a-z0-9\s -> "tout ce qui n'est PAS lettre, chiffre ou espace"
+            .replace(/[^a-z0-9\s]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+        );
       }
 
-      // Extraire titre / artiste à partir du nom de fichier (ex : "Titre - Artiste.mp3")
-      const parts = baseName
-        .split("-")
+      rooms[upperRoomCode].normalizeStr = normalizeStr;
+
+      const MIN_LENGTH = 2;
+
+      let cleanerName = chosenFile.replace(/\.mp3$/i, "");
+      cleanerName = cleanerName.replace(/(\(|\[).*?(\)|\])/g, "").trim();
+
+      const parts = cleanerName
+        .split(/\s+-\s+|_/)
         .map((p) => p.trim())
-        .filter(Boolean);
+        .filter((p) => p.length >= MIN_LENGTH);
+
       let title = "";
       let artist = "";
+
       if (parts.length === 0) {
-        title = baseName;
+        title = cleanerName;
       } else if (parts.length === 1) {
         title = parts[0];
       } else {
-        title = parts[0];
-        artist = parts.slice(1).join(" - ");
+        artist = parts[0];
+        title = parts.slice(1).join(" ");
       }
 
       const normalizedTitle = normalizeStr(title);
       const normalizedArtist = normalizeStr(artist);
-      const normalizedBase = normalizeStr(baseName);
+      const normalizedBase = normalizeStr(cleanerName);
 
-      // Construire un ensemble de réponses acceptables :
-      // - titre seul
-      // - artiste seul
-      // - "titre artiste" et "artiste titre" (sans le "-")
-      // - nom de fichier normalisé (avec ou sans "-")
       const acceptableAnswers = new Set();
-      if (normalizedTitle) acceptableAnswers.add(normalizedTitle);
-      if (normalizedArtist) acceptableAnswers.add(normalizedArtist);
-      if (normalizedTitle && normalizedArtist) {
+
+      if (normalizedTitle.length >= MIN_LENGTH) {
+        acceptableAnswers.add(normalizedTitle);
+      }
+
+      if (normalizedArtist.length >= MIN_LENGTH) {
+        acceptableAnswers.add(normalizedArtist);
+      }
+
+      if (
+        normalizedTitle.length >= MIN_LENGTH &&
+        normalizedArtist.length >= MIN_LENGTH
+      ) {
         acceptableAnswers.add(`${normalizedTitle} ${normalizedArtist}`);
         acceptableAnswers.add(`${normalizedArtist} ${normalizedTitle}`);
-        acceptableAnswers.add(normalizedBase.replace(/\s*-\s*/g, " "));
-      }
-      acceptableAnswers.add(normalizedBase);
 
-      if (!rooms[roomCode]) {
-        return;
-      }
-      const startTime = rooms[roomCode].musicStartTime;
-      const now = Date.now();
-
-      for (const playerName of players) {
-        const answer = rooms[roomCode].answers[playerName];
-        let points = 0;
-        let isCorrect = false;
-        if (answer) {
-          const normalizedAnswer = normalizeStr(answer);
-          if (acceptableAnswers.has(normalizedAnswer)) {
-            isCorrect = true;
-            const elapsedSeconds = Math.floor((now - startTime) / 1000);
-            points = Math.max(100 - elapsedSeconds * 10, 10);
-          }
+        const flatBase = normalizedBase.replace(/[^a-z0-9 ]/g, " ").trim();
+        if (flatBase.length >= MIN_LENGTH) {
+          acceptableAnswers.add(flatBase);
         }
-        rooms[roomCode].scores[playerName] =
-          (rooms[roomCode].scores[playerName] || 0) + points;
-        // Envoie le résultat individuel
-        io.to(roomCode).emit("blindtest_result", {
-          playerName,
-          correct: isCorrect,
-          points,
-          totalScore: rooms[roomCode].scores[playerName],
-          elapsedSeconds: answer ? Math.floor((now - startTime) / 1000) : null,
-        });
       }
 
-      // Met à jour tous les scores de la room
-      io.to(roomCode).emit("blindtest_scores", {
-        scores: rooms[roomCode].scores,
+      if (normalizedBase.length >= MIN_LENGTH) {
+        acceptableAnswers.add(normalizedBase);
+      }
+
+      rooms[upperRoomCode].acceptableAnswers = acceptableAnswers;
+
+      const players = [...new Set(Object.values(rooms[upperRoomCode].players))];
+
+      // Attend 15 secondes ou jusqu'à ce que tous les joueurs aient répondu
+      const waitForAnswers = () =>
+        new Promise((resolve) => {
+          const timeoutId = setTimeout(() => {
+            clearInterval(intervalId);
+            resolve();
+          }, 15000);
+
+          const intervalId = setInterval(() => {
+            if (
+              rooms[upperRoomCode] &&
+              rooms[upperRoomCode].answeredPlayers.size >= players.length
+            ) {
+              clearInterval(intervalId);
+              clearTimeout(timeoutId);
+              resolve();
+            }
+          }, 200);
+        });
+
+      await waitForAnswers();
+
+      // reveal bonne réponse + envoi des scores
+      const correctName = chosenFile.replace(/\\.mp3$/i, "");
+      io.to(upperRoomCode).emit("blindtest_round_end", {
+        correctAnswer: correctName,
+        scores: rooms[upperRoomCode].scores,
       });
 
-      // Passe à la musique suivante
-      rooms[roomCode].blindtestIndex = index + 1;
+      rooms[upperRoomCode].blindtestIndex = index + 1;
       setTimeout(() => {
         launchMusic(index + 1);
-      }, 2000); // Petite pause de 2s entre chaque musique
+      }, 5000);
     };
 
-    // Démarre la séquence
-    launchMusic(0);
+    io.to(upperRoomCode).emit("blindtest_countdown", { seconds: 5 });
+    log("INFO", "Début du compte à rebours pour le lancement du jeu");
+
+    setTimeout(() => launchMusic(0), 5000);
   });
 
-  // Réponse d'un joueur (pour la séquence, stocke juste la réponse côté serveur)
-  socket.on("blindtest_answer", ({ roomCode, playerName, answer }) => {
-    if (!roomCode || !rooms[roomCode]) {
-      socket.emit("blindtest_result", { error: "Room not found" });
+  // réponse d'un joueur (stockage côté serveur, sans db pour l'instant)
+  socket.on("blindtest_answer", ({ roomCode, answer }) => {
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
+    const playerSocketId = socket.sessionID;
+    const playerName = room.players[playerSocketId];
+
+    // log("INFO", "room : ", room);
+    // log("INFO", "playerName : ", playerName);
+    // log("INFO", "room.currentMusic : ", room.currentMusic);
+
+    if (!room || !playerName || !room.currentMusic) {
+      socket.emit("blindtest_error", { message: "Cannot submit answer." });
       return;
     }
-    if (!playerName) {
-      socket.emit("blindtest_result", { error: "Player name required" });
+    if (room.answeredPlayers.has(playerName)) {
+      socket.emit("blindtest_result", {
+        playerName,
+        correct: true,
+        points: 0,
+        totalScore: room.scores[playerName],
+        elapsedSeconds: null,
+        message: "You have already answered correctly for this song.",
+      });
       return;
     }
-    // Stocke la réponse pour le joueur dans la room, pour la musique en cours
-    if (!rooms[roomCode].answers) rooms[roomCode].answers = {};
-    if (!rooms[roomCode].answers[playerName]) {
-      rooms[roomCode].answers[playerName] = answer;
+
+    const musicStartTime = room.musicStartTime;
+    const now = Date.now();
+    const elapsedSeconds = Math.floor((now - musicStartTime) / 1000);
+
+    let points = 0;
+    let isCorrect = false;
+
+    const normalizedAnswer = room.normalizeStr(answer);
+
+    if (room.acceptableAnswers.has(normalizedAnswer)) {
+      isCorrect = true;
+      points = Math.max(100 - elapsedSeconds * 10, 10);
+
+      room.scores[playerName] = (room.scores[playerName] || 0) + points;
     }
-    // Le calcul des points se fait à la fin du timer ou quand tous les joueurs ont répondu
-    // (voir la logique dans blindtest_game_start)
+
+    room.answeredPlayers.add(playerName);
+
+    io.to(upperRoomCode).emit("blindtest_result", {
+      playerName,
+      correct: isCorrect,
+      points,
+      totalScore: room.scores[playerName],
+      elapsedSeconds,
+    });
   });
 
-  socket.emit("connected", { socketId: socket.id });
+  // --- Blindtest Socket.io Events ---
 });
 
 server.listen(3001, () => {
