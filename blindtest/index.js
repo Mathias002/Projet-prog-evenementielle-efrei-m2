@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const Store = require("./store");
 
 const app = express();
 app.use(cors());
@@ -14,21 +15,17 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
+    // methods: ["GET", "POST"],
   },
 });
 
-// stocke les rooms en mémoire serveur
-const rooms = {};
+// --- VARIABLES EN RAM ---
+// const rooms = {}; // SUPPRIMÉ (Géré par Redis)
+// const activeUsers = new Map(); // SUPPRIMÉ (Géré par Redis)
+// const userRooms = new Map(); // SUPPRIMÉ (Géré par Redis)
 
 // Stocke les liens temporaires vers les fichiers audio (ID -> Nom du fichier)
 const activeStreams = new Map();
-
-// stocke le mapping d'un utilisateur entre son sessionID et son socket.id
-const activeUsers = new Map();
-
-// stocke le mapping des utilisateurs et de lur room
-const userRooms = new Map();
 
 // Stocke les timeouts de suppression
 const disconnectTimeouts = new Map();
@@ -76,7 +73,7 @@ io.use((socket, next) => {
   return next(new Error("Authentification invalide"));
 });
 
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
   log("INFO", "🟢 Nouveau client connecté :", socket.id);
 
   // Initialisation du sessionID depuis le socket
@@ -89,35 +86,41 @@ io.on("connection", (socket) => {
     disconnectTimeouts.delete(sID);
   }
 
-  // Reconnexion automatique
-  if (userRooms.has(sID)) {
-    userRooms.get(sID).forEach((roomCode) => {
-      // On récupère les infos de la room
-      const room = rooms[roomCode];
-      // Si la room existe et que le joueur en fait parti on rentre
-      if (room && room.players[sID]) {
-        // On le marque comme EN LIGNE
-        room.players[sID].online = true;
+  // --- RECONNEXION AUTOMATIQUE (REDIS) ---
+  // On récupère la liste des rooms depuis Redis
+  const myRooms = await Store.getUserRooms(sID);
 
-        // On force le join de l'utilisateur dans la room
-        socket.join(roomCode);
+  if (myRooms && myRooms.length > 0) {
+    // On boucle avec Promise.all pour gérer l'async proprement
+    await Promise.all(
+      myRooms.map(async (roomCode) => {
+        const room = await Store.getRoom(roomCode); // Récup depuis Redis
 
-        // On renvoie l'état actuel au client
-        socket.emit("room_updated", {
-          roomCode: roomCode,
-          hostId: room.hostId,
-          players: room.players,
-          readyPlayers: room.readyPlayers,
-        });
-        log("INFO", `🔄 Restauration état room ${roomCode} pour ${sID}`);
-      }
-    });
+        if (room && room.players[sID]) {
+          // Mise à jour locale
+          room.players[sID].online = true;
+
+          // SAUVEGARDE REDIS
+          await Store.saveRoom(roomCode, room);
+
+          socket.join(roomCode);
+
+          socket.emit("room_updated", {
+            roomCode: roomCode,
+            hostId: room.hostId,
+            players: room.players,
+            readyPlayers: room.readyPlayers,
+          });
+          log("INFO", `🔄 Restauration état room ${roomCode} pour ${sID}`);
+        }
+      }),
+    );
   }
 
-  // On mappe le sessionID (permanent) avec le nouveau socketID (temporaire)
-  activeUsers.set(sID, socket.id);
+  // Mappe sessionID -> socketID dans Redis
+  await Store.saveSessionSocket(sID, socket.id);
 
-  socket.on("create_room", ({ playerName }) => {
+  socket.on("create_room", async ({ playerName }) => {
     log("INFO", "Demande création de room", { socketId: socket.id });
 
     const errorCode = validatePlayerName(playerName);
@@ -138,7 +141,7 @@ io.on("connection", (socket) => {
     const roomCode = generateRoomCode();
 
     // structure de l'objet room à améliorer
-    rooms[roomCode] = {
+    const newRoom = {
       hostId: socket.sessionID,
       players: {
         [socket.sessionID]: playerName,
@@ -153,9 +156,11 @@ io.on("connection", (socket) => {
     };
 
     // On sauvegarde l'info pour le prochain refresh
-    if (!userRooms.has(sID)) userRooms.set(sID, new Set());
+    // if (!userRooms.has(sID)) userRooms.set(sID, new Set());
 
-    userRooms.get(sID).add(roomCode);
+    // SAUVEGARDE REDIS
+    await Store.saveRoom(roomCode, newRoom);
+    await Store.addUserToRoomList(sID, roomCode);
 
     socket.join(roomCode);
 
@@ -169,15 +174,17 @@ io.on("connection", (socket) => {
       data: {
         roomCode,
         hostId: socket.sessionID,
-        players: rooms[roomCode].players,
-        readyPlayers: rooms[roomCode].readyPlayers,
+        players: newRoom.players,
+        readyPlayers: newRoom.readyPlayers,
       },
     });
   });
 
-  socket.on("join_room", ({ roomName, playerName }) => {
+  socket.on("join_room", async ({ roomName, playerName }) => {
     const upperRoomCode = roomName.toUpperCase();
-    const room = rooms[upperRoomCode];
+
+    // REDIS GET
+    const room = await Store.getRoom(upperRoomCode);
 
     if (!room) {
       socket.emit("join_room_response", {
@@ -199,22 +206,32 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // On sauvegarde l'info pour le prochain refresh
-    if (!userRooms.has(sID)) userRooms.set(sID, new Set());
+    // Ajouter user à la liste de la room dans Redis
+    await Store.addUserToRoomList(sID, upperRoomCode);
 
-    userRooms.get(sID).add(upperRoomCode);
+    // Modifier la room
+    room.players[socket.sessionID] = { name: playerName, online: true };
+    room.readyPlayers[socket.sessionID] = false;
 
-    // Enregistre le joueur sous son sessionID
-    room.players[socket.sessionID] = playerName;
+    // SAUVEGARDE REDIS
+    await Store.saveRoom(upperRoomCode, room);
 
-    room.players[socket.sessionID].online = true;
+    // // On sauvegarde l'info pour le prochain refresh
+    // if (!userRooms.has(sID)) userRooms.set(sID, new Set());
 
-    if (!room.readyPlayers) room.readyPlayers = {};
+    // userRooms.get(sID).add(upperRoomCode);
 
-    // Initialise l'état prêt à false pour le nouveau joueur
-    if (room.readyPlayers[socket.sessionID] === undefined) {
-      room.readyPlayers[socket.sessionID] = false;
-    }
+    // // Enregistre le joueur sous son sessionID
+    // room.players[socket.sessionID] = playerName;
+
+    // room.players[socket.sessionID].online = true;
+
+    // if (!room.readyPlayers) room.readyPlayers = {};
+
+    // // Initialise l'état prêt à false pour le nouveau joueur
+    // if (room.readyPlayers[socket.sessionID] === undefined) {
+    //   room.readyPlayers[socket.sessionID] = false;
+    // }
 
     socket.join(upperRoomCode);
 
@@ -238,9 +255,12 @@ io.on("connection", (socket) => {
   });
 
   // Gérer l'état "prêt" d'un joueur
-  socket.on("toggle_ready", ({ roomCode }) => {
+  socket.on("toggle_ready", async ({ roomCode }) => {
     const upperRoomCode = roomCode.toUpperCase();
-    const room = rooms[upperRoomCode];
+    // const room = rooms[upperRoomCode];
+
+    // REDIS GET
+    const room = await Store.getRoom(upperRoomCode);
 
     if (!room) {
       socket.emit("toggle_ready_response", {
@@ -263,12 +283,21 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (!room.readyPlayers) room.readyPlayers = {};
+    // if (!room.readyPlayers) room.readyPlayers = {};
 
-    // Toggle l'état prêt du joueur
+    // // Toggle l'état prêt du joueur
+    // room.readyPlayers[userId] = !room.readyPlayers[userId];
+
+    // const playerName = room.players[userId];
+    // const isReady = room.readyPlayers[userId];
+
+    // Toggle état
     room.readyPlayers[userId] = !room.readyPlayers[userId];
 
-    const playerName = room.players[userId];
+    // SAUVEGARDE REDIS
+    await Store.saveRoom(upperRoomCode, room);
+
+    const playerName = room.players[userId].name;
     const isReady = room.readyPlayers[userId];
 
     log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, {
@@ -329,70 +358,62 @@ io.on("connection", (socket) => {
 
   socket.emit("connected", { socketId: socket.id });
 
-  socket.on("disconnect", (reason) => {
+  socket.on("disconnect", async (reason) => {
     log("INFO", `🔴 Déconnexion de ${sID} (Raison: ${reason})`);
 
     // On lance le compte à rebours de xx secondes
-    const timeout = setTimeout(() => {
-      log("INFO", `🗑️ Suppression définitive de ${sID} (Délai écoulé)`);
+    const timeout = setTimeout(async () => {
+      // <--- ASYNC DANS LE TIMEOUT
+      log("INFO", `🗑️ Suppression définitive de ${sID}`);
 
-      // Met le joueur HORS LIGNE
-      if (userRooms.has(sID)) {
-        userRooms.get(sID).forEach((roomCode) => {
-          if (rooms[roomCode] && rooms[roomCode].players[sID]) {
-            rooms[roomCode].players[sID].online = false;
+      // Récupérer les rooms de l'utilisateur depuis Redis
+      const userRoomsList = await Store.getUserRooms(sID);
 
-            // On envoie la mise à jour aux autres tout de suite
-            socket.emit("room_updated", {
-              hostId: rooms[roomCode].hostId,
-              players: rooms[roomCode].players,
-              readyPlayers: rooms[roomCode].readyPlayers,
-            });
-          }
-        });
-      }
+      if (userRoomsList && userRoomsList.length > 0) {
+        // Pour chaque room : mettre le joueur hors ligne ou le supprimer
+        await Promise.all(
+          userRoomsList.map(async (roomCode) => {
+            const room = await Store.getRoom(roomCode);
+            if (!room) return;
 
-      // Nettoyer les rooms
-      if (userRooms.has(sID)) {
-        userRooms.get(sID).forEach((roomCode) => {
-          const room = rooms[roomCode];
-          if (!room) return;
+            // Supprimer le joueur
+            delete room.players[sID];
+            delete room.readyPlayers[sID];
 
-          // Retirer le joueur de la room
-          delete room.players[sID];
-          delete room.readyPlayers[sID];
-
-          // Gestion du host
-          if (room.hostId === sID) {
-            const remainingIds = Object.keys(room.players);
-            if (remainingIds.length > 0) {
-              // On nomme le premier joueur restant comme nouvel hôte
-              room.hostId = remainingIds[0];
-              log("INFO", `Nouvel hôte pour ${roomCode} : ${room.hostId}`);
-            } else {
-              // Si plus personne on supprime la room
-              delete rooms[roomCode];
-              log("INFO", `Room ${roomCode} supprimée (vide)`);
-              return;
+            // Gérer le changement de host
+            if (room.hostId === sID) {
+              const remainingIds = Object.keys(room.players);
+              if (remainingIds.length > 0) {
+                room.hostId = remainingIds[0];
+              } else {
+                // Plus personne : supprimer la room de Redis
+                await Store.deleteRoom(roomCode);
+                return;
+              }
             }
-          }
 
-          // Prévenir les autres joueurs
-          socket.emit("room_updated", {
-            hostId: room.hostId,
-            players: room.players,
-            readyPlayers: room.readyPlayers,
-          });
-        });
+            // Si encore du monde, on met à jour la room
+            if (Object.keys(room.players).length > 0) {
+              await Store.saveRoom(roomCode, room);
+              io.to(roomCode).emit("room_updated", {
+                /* ... */
+              });
+            } else {
+              // Sécurité double check : supprimer room vide
+              await Store.deleteRoom(roomCode);
+            }
 
-        // Supprimer les références globales
-        userRooms.delete(sID);
+            // Supprimer le lien user -> room
+            await Store.removeUserFromRoomList(sID, roomCode);
+          }),
+        );
       }
 
-      // Supprimer le timeout
+      // Nettoyage final Redis
+      await Store.deleteUserRooms(sID);
+      await Store.deleteSessionSocket(sID);
       disconnectTimeouts.delete(sID);
-      activeUsers.delete(sID);
-    }, 5000); // <-- xx secondes de délai (xxxx ms)
+    }, 10000);
 
     // stocke le timeout pour pouvoir l'annuler si le joueur revient
     disconnectTimeouts.set(sID, timeout);

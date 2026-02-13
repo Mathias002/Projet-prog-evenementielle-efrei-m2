@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  # Ton backend (optionnel si tu le lances déjà via npm start, mais recommandé)
+  # backend:
+  #   build: .
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+
+  # Le service Redis
+  redis:
+    image: redis:alpine
+    container_name: blindtest-redis
+    ports:
+      - "6379:6379" # Expose le port pour que ton Node local puisse s'y connecter
+    volumes:
+      - redis_data:/data # Persistance des données Redis sur le disque de l'hôte
+    command: redis-server --appendonly yes # Active la persistance sur disque (AOF)
+
+volumes:
+  redis_data:

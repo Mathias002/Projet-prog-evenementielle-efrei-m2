@@ -75,7 +75,8 @@ export default function Game() {
       setTimer(15);
 
       if (audioRef.current) {
-        audioRef.current.src = data.url;
+        // audioRef.current.src = data.url;
+        audioRef.current.src = `http://localhost:3001${data.url}`;
         audioRef.current.volume = 0.3;
         audioRef.current
           .play()
