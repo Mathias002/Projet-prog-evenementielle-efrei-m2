@@ -1,6 +1,6 @@
 const { io } = require("socket.io-client");
 
-const socket = io("http://localhost:3001");
+const socket = io();
 
 var roomCode = null;
 
@@ -28,7 +28,7 @@ socket.on("connect", () => {
         playerName: "Alice",
         answer: "GOOD NIGHT",
       });
-    }, 1000); // Répond après 5 secondes
+    }, 1000); // Répond après 1 secondes
   });
 
   socket.on("blindtest_result", (data) => {
