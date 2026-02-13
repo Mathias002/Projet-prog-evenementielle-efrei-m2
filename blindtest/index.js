@@ -18,11 +18,22 @@ const io = new Server(server, {
   },
 });
 
+// stocke les rooms en mémoire serveur
 const rooms = {};
 
 // Stocke les liens temporaires vers les fichiers audio (ID -> Nom du fichier)
 const activeStreams = new Map();
 
+// stocke le mapping d'un utilisateur entre son sessionID et son socket.id
+const activeUsers = new Map();
+
+// stocke le mapping des utilisateurs et de lur room
+const userRooms = new Map();
+
+// Stocke les timeouts de suppression
+const disconnectTimeouts = new Map();
+
+// Permet de récupérer les fichiers mp3 dans le dossier `audio`
 function getAudioFiles() {
   const audioDir = path.join(__dirname, "audio");
   return fs.readdirSync(audioDir).filter((file) => file.endsWith(".mp3"));
@@ -33,15 +44,18 @@ function generateMusicId() {
   return Math.random().toString(36).substring(2, 10);
 }
 
+// Permet de générer un code aléatoire pour les rooms
 function generateRoomCode() {
   return Math.random().toString(36).substring(2, 6).toUpperCase();
 }
 
+// Permet de styliser les logs dans le terminal du server
 function log(type, message, data = null) {
   const time = new Date().toISOString();
   console.log(`[${time}] [${type}] ${message}`, data ? data : "");
 }
 
+// Permet de valider le pseudo renseigner pas l'utilisateur
 function validatePlayerName(name) {
   if (!name) return "EMPTY_NAME";
   if (name.length < 3) return "NAME_TOO_SHORT";
@@ -49,8 +63,117 @@ function validatePlayerName(name) {
   return null;
 }
 
+io.use((socket, next) => {
+  const sessionID = socket.handshake.auth.sessionID;
+
+  if (sessionID) {
+    // On attache le sessionID à l'objet socket pour pouvoir l'utiliser plus tard
+    socket.sessionID = sessionID;
+    return next();
+  }
+
+  // Si pas d'ID, on refuse la connexion (optionnel)
+  return next(new Error("Authentification invalide"));
+});
+
 io.on("connection", (socket) => {
   log("INFO", "🟢 Nouveau client connecté :", socket.id);
+
+  // Initialisation du sessionID depuis le socket
+  const sID = socket.sessionID;
+
+  // Annulation de la suppression si le joueur reviens après le délai
+  if (disconnectTimeouts.has(sID)) {
+    log("INFO", `${sID} est revenu à temps.`);
+    clearTimeout(disconnectTimeouts.get(sID));
+    disconnectTimeouts.delete(sID);
+  }
+
+  // Reconnexion automatique
+  if (userRooms.has(sID)) {
+    userRooms.get(sID).forEach((roomCode) => {
+      // On récupère les infos de la room
+      const room = rooms[roomCode];
+      // Si la room existe et que le joueur en fait parti on rentre
+      if (room && room.players[sID]) {
+        // On le marque comme EN LIGNE
+        room.players[sID].online = true;
+
+        // On force le join de l'utilisateur dans la room
+        socket.join(roomCode);
+
+        // On renvoie l'état actuel au client
+        socket.emit("room_updated", {
+          roomCode: roomCode,
+          hostId: room.hostId,
+          players: room.players,
+          readyPlayers: room.readyPlayers,
+        });
+        log("INFO", `🔄 Restauration état room ${roomCode} pour ${sID}`);
+      }
+    });
+  }
+
+  // On mappe le sessionID (permanent) avec le nouveau socketID (temporaire)
+  activeUsers.set(sID, socket.id);
+
+  socket.on("create_room", ({ playerName }) => {
+    log("INFO", "Demande création de room", { socketId: socket.id });
+
+    const errorCode = validatePlayerName(playerName);
+
+    if (errorCode) {
+      log("WARN", "Pseudo invalide", { playerName, errorCode });
+
+      socket.emit("create_room_response", {
+        success: false,
+        error: {
+          code: errorCode,
+          message: "Pseudo invalide (3 à 15 caractères)",
+        },
+      });
+      return;
+    }
+
+    const roomCode = generateRoomCode();
+
+    // structure de l'objet room à améliorer
+    rooms[roomCode] = {
+      hostId: socket.sessionID,
+      players: {
+        [socket.sessionID]: playerName,
+      },
+      readyPlayers: {
+        [socket.sessionID]: false, // Le créateur n'est pas prêt par défaut
+      },
+      createdAt: Date.now(),
+      scores: {},
+      currentMusic: null,
+      musicStartTime: null,
+    };
+
+    // On sauvegarde l'info pour le prochain refresh
+    if (!userRooms.has(sID)) userRooms.set(sID, new Set());
+
+    userRooms.get(sID).add(roomCode);
+
+    socket.join(roomCode);
+
+    log("SUCCESS", "Room créée", {
+      roomCode,
+      host: playerName,
+    });
+
+    socket.emit("create_room_response", {
+      success: true,
+      data: {
+        roomCode,
+        hostId: socket.sessionID,
+        players: rooms[roomCode].players,
+        readyPlayers: rooms[roomCode].readyPlayers,
+      },
+    });
+  });
 
   socket.on("join_room", ({ roomName, playerName }) => {
     const upperRoomCode = roomName.toUpperCase();
@@ -76,10 +199,23 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // Enregistre le joueur sous son socket id (conserve les autres joueurs)
-    room.players[socket.id] = playerName;
+    // On sauvegarde l'info pour le prochain refresh
+    if (!userRooms.has(sID)) userRooms.set(sID, new Set());
+
+    userRooms.get(sID).add(upperRoomCode);
+
+    // Enregistre le joueur sous son sessionID 
+    room.players[socket.sessionID] = playerName;
+
+    room.players[socket.sessionID].online = true;
+
     if (!room.readyPlayers) room.readyPlayers = {};
-    room.readyPlayers[socket.id] = false;
+
+    // Initialise l'état prêt à false pour le nouveau joueur
+    if (room.readyPlayers[socket.sessionID] === undefined) {
+      room.readyPlayers[socket.sessionID] = false;
+    }
+
     socket.join(upperRoomCode);
 
     io.to(upperRoomCode).emit("room_updated", {
@@ -101,7 +237,7 @@ io.on("connection", (socket) => {
     log("INFO", `👤 ${playerName} a rejoint ${upperRoomCode}`);
   });
 
-  // gestion ready joueurs
+  // Gérer l'état "prêt" d'un joueur
   socket.on("toggle_ready", ({ roomCode }) => {
     const upperRoomCode = roomCode.toUpperCase();
     const room = rooms[upperRoomCode];
@@ -114,7 +250,9 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (!room.players[socket.id]) {
+    const userId = socket.sessionID;
+
+    if (!room.players[userId]) {
       socket.emit("toggle_ready_response", {
         success: false,
         error: {
@@ -126,10 +264,12 @@ io.on("connection", (socket) => {
     }
 
     if (!room.readyPlayers) room.readyPlayers = {};
-    room.readyPlayers[socket.id] = !room.readyPlayers[socket.id];
 
-    const playerName = room.players[socket.id];
-    const isReady = room.readyPlayers[socket.id];
+    // Toggle l'état prêt du joueur
+    room.readyPlayers[userId] = !room.readyPlayers[userId];
+
+    const playerName = room.players[userId];
+    const isReady = room.readyPlayers[userId];
 
     log("INFO", `${playerName} est ${isReady ? "prêt" : "pas prêt"}`, {
       roomCode: upperRoomCode,
@@ -148,7 +288,127 @@ io.on("connection", (socket) => {
     });
   });
 
-  // lancement de la partie
+  socket.on("leave_room", (roomCode) => {
+    const upperRoomCode = roomCode.toUpperCase();
+    const room = rooms[upperRoomCode];
+    const userId = socket.sessionID;
+
+    if (room && room.players[userId]) {
+
+      delete room.players[userId];
+      delete room.readyPlayers[userId];
+
+      socket.leave(upperRoomCode);
+
+      io.to(upperRoomCode).emit("room_updated", {
+        hostId: room.hostId,
+        players: room.players,
+        readyPlayers: room.readyPlayers,
+      });
+
+      // Si plus de joueur dans la room on la supprime
+      if (Object.keys(room.players).length === 0) {
+        delete rooms[upperRoomCode];
+        log("INFO", `❌ Room supprimée (vide) : ${upperRoomCode}`);
+      }
+    }
+  });
+
+  socket.emit("connected", { socketId: socket.id });
+
+  socket.on("disconnect", (reason) => {
+    log("INFO", `🔴 Déconnexion de ${sID} (Raison: ${reason})`);
+
+    // On lance le compte à rebours de xx secondes
+    const timeout = setTimeout(() => {
+      log("INFO", `🗑️ Suppression définitive de ${sID} (Délai écoulé)`);
+
+      // Met le joueur HORS LIGNE 
+      if (userRooms.has(sID)) {
+        userRooms.get(sID).forEach((roomCode) => {
+          if (rooms[roomCode] && rooms[roomCode].players[sID]) {
+            rooms[roomCode].players[sID].online = false;
+
+            // On envoie la mise à jour aux autres tout de suite
+            socket.emit("room_updated", {
+              hostId: rooms[roomCode].hostId,
+              players: rooms[roomCode].players,
+              readyPlayers: rooms[roomCode].readyPlayers,
+            });
+          }
+        });
+      }
+
+      // Nettoyer les rooms
+      if (userRooms.has(sID)) {
+        userRooms.get(sID).forEach((roomCode) => {
+          const room = rooms[roomCode];
+          if (!room) return;
+
+          // Retirer le joueur de la room
+          delete room.players[sID];
+          delete room.readyPlayers[sID];
+
+          // Gestion du host
+          if (room.hostId === sID) {
+            const remainingIds = Object.keys(room.players);
+            if (remainingIds.length > 0) {
+              // On nomme le premier joueur restant comme nouvel hôte
+              room.hostId = remainingIds[0];
+              log("INFO", `Nouvel hôte pour ${roomCode} : ${room.hostId}`);
+            } else {
+              // Si plus personne on supprime la room
+              delete rooms[roomCode];
+              log("INFO", `Room ${roomCode} supprimée (vide)`);
+              return;
+            }
+          }
+
+          // Prévenir les autres joueurs
+          socket.emit("room_updated", {
+            hostId: room.hostId,
+            players: room.players,
+            readyPlayers: room.readyPlayers,
+          });
+        });
+
+        // Supprimer les références globales
+        userRooms.delete(sID);
+      }
+
+      // Supprimer le timeout
+      disconnectTimeouts.delete(sID);
+      activeUsers.delete(sID);
+    }, 5000); // <-- xx secondes de délai (xxxx ms)
+
+    // stocke le timeout pour pouvoir l'annuler si le joueur revient
+    disconnectTimeouts.set(sID, timeout);
+  });
+
+   // Route pour streamer l'audio
+  app.get("/blindtest/audio/stream/:id", (req, res) => {
+    const musicId = req.params.id;
+    const fileName = activeStreams.get(musicId);
+
+    if (!fileName) {
+      return res.status(404).send("Lien expiré ou invalide");
+    }
+
+    const filePath = path.join(__dirname, "audio", fileName);
+
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      res.writeHead(200, {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": stat.size,
+      });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.status(404).send("Fichier introuvable");
+    }
+  });
+
+  // Lancer la partie (uniquement si tous sont prêts)
   socket.on("start_game", ({ roomCode }) => {
     const upperRoomCode = roomCode.toUpperCase();
     const room = rooms[upperRoomCode];
@@ -186,105 +446,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Route pour streamer l'audio
-  app.get("/blindtest/audio/stream/:id", (req, res) => {
-    const musicId = req.params.id;
-    const fileName = activeStreams.get(musicId);
-
-    if (!fileName) {
-      return res.status(404).send("Lien expiré ou invalide");
-    }
-
-    const filePath = path.join(__dirname, "audio", fileName);
-
-    if (fs.existsSync(filePath)) {
-      const stat = fs.statSync(filePath);
-      res.writeHead(200, {
-        "Content-Type": "audio/mpeg",
-        "Content-Length": stat.size,
-      });
-      fs.createReadStream(filePath).pipe(res);
-    } else {
-      res.status(404).send("Fichier introuvable");
-    }
-  });
-
-  socket.on("disconnect", () => {
-    for (const roomCode in rooms) {
-      const room = rooms[roomCode];
-
-      if (room.players[socket.id]) {
-        const playerName = room.players[socket.id];
-        delete room.players[socket.id];
-        delete room.readyPlayers[socket.id];
-
-        io.to(roomCode).emit("room_updated", {
-          hostId: room.hostId,
-          players: room.players,
-          readyPlayers: room.readyPlayers,
-        });
-
-        log("INFO", `${playerName} a quitté ${roomCode}`);
-
-        if (Object.keys(room.players).length === 0) {
-          delete rooms[roomCode];
-          log("INFO", `❌ Room supprimée : `, roomCode);
-        }
-      }
-    }
-  });
-
-  socket.on("create_room", ({ playerName }) => {
-    log("INFO", "Demande création de room", { socketId: socket.id });
-
-    const errorCode = validatePlayerName(playerName);
-
-    if (errorCode) {
-      log("WARN", "Pseudo invalide", { playerName, errorCode });
-
-      socket.emit("create_room_response", {
-        success: false,
-        error: {
-          code: errorCode,
-          message: "Pseudo invalide (3 à 15 caractères)",
-        },
-      });
-      return;
-    }
-
-    const roomCode = generateRoomCode();
-
-    rooms[roomCode] = {
-      hostId: socket.id,
-      players: {
-        [socket.id]: playerName,
-      },
-      readyPlayers: {
-        [socket.id]: false,
-      },
-      createdAt: Date.now(),
-      scores: {},
-      currentMusic: null,
-      musicStartTime: null,
-    };
-
-    socket.join(roomCode);
-
-    log("SUCCESS", "Room créée", {
-      roomCode,
-      host: playerName,
-    });
-
-    socket.emit("create_room_response", {
-      success: true,
-      data: {
-        roomCode,
-        hostId: socket.id,
-        players: rooms[roomCode].players,
-        readyPlayers: rooms[roomCode].readyPlayers,
-      },
-    });
-  });
+  // --- Blindtest Socket.io Events ---
 
   // Lancer une séquence de 10 musiques (événement de démarrage du jeu)
   socket.on("blindtest_game_start", async ({ roomCode }) => {
@@ -513,28 +675,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("leave_room", (roomCode) => {
-    const upperRoomCode = roomCode.toUpperCase();
-    const room = rooms[upperRoomCode];
-    if (room && room.players[socket.id]) {
-      delete room.players[socket.id];
-      delete room.readyPlayers[socket.id];
-
-      socket.leave(upperRoomCode);
-      io.to(upperRoomCode).emit("room_updated", {
-        hostId: room.hostId,
-        players: room.players,
-        readyPlayers: room.readyPlayers,
-      });
-
-      if (Object.keys(room.players).length === 0) {
-        delete rooms[upperRoomCode];
-        console.log(`❌ Room supprimée (vide) : ${upperRoomCode}`);
-      }
-    }
-  });
-
-  socket.emit("connected", { socketId: socket.id });
+  // --- Blindtest Socket.io Events ---
 });
 
 server.listen(3001, () => {

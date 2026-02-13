@@ -6,18 +6,12 @@ import "./Game.css";
 export default function Game() {
   const navigate = useNavigate();
   const { state: navState } = useLocation();
+  
   var myName = null;
-  const [room, setRoom] = useState(() => {
-    if (navState) return navState;
-    try {
-      const stored = sessionStorage.getItem("currentRoom");
-      return stored ? JSON.parse(stored) : null;
-    } catch (e) {
-      return null;
-    }
-  });
 
-  myName = sessionStorage.getItem("myName");
+  const [room] = useState(() => {
+    if (navState) return navState;
+  });
 
   const [socketId, setSocketId] = useState(socket.id);
   const [gamePhase, setGamePhase] = useState("loading"); // loading, playing, results, end

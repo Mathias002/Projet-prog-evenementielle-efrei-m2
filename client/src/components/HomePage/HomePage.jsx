@@ -11,7 +11,6 @@ export default function Home() {
 
   const createRoom = () => {
     setError(null);
-    sessionStorage.setItem("myName", playerName);
     socket.emit("create_room", { playerName });
   };
 
@@ -19,7 +18,6 @@ export default function Home() {
     console.log("join");
     console.log(roomName);
     console.log(playerName);
-    sessionStorage.setItem("myName", playerName);
     setError(null);
     socket.emit("join_room", { roomName, playerName });
   };
@@ -33,62 +31,23 @@ export default function Home() {
           setError(response.error.message);
           return;
         }
-
-        // store initial room state so Lobby can access it if needed
-        try {
-          const roomData = { ...response.data, myName: playerName };
-          sessionStorage.setItem("currentRoom", JSON.stringify(roomData));
-        } catch (e) {
-          // ignore storage errors
-        }
-
         navigate("/lobby", {
           state: response.data,
         });
       });
 
     // Handle join room responses (navigate to lobby on success)
-    socket.off("join_room_response").on("join_room_response", (response) => {
-      if (!response.success) {
-        setError(response.error.message);
-        return;
-      }
+    socket
+      .off("join_room_response")
+      .on("join_room_response", (response) => {
+        if (!response.success) {
+          setError(response.error.message);
+          return;
+        }
 
-      try {
-        const roomData = { ...response.data, myName: playerName };
-        sessionStorage.setItem("currentRoom", JSON.stringify(roomData));
-      } catch (e) {
-        // ignore storage errors
-      }
-
-      navigate("/lobby", {
-        state: response.data,
-      });
-    });
-
-    // Keep a local cache of the room state so the Lobby page can pick up updates
-    // when it mounts (we write updates to sessionStorage)
-    socket.off("room_updated").on("room_updated", (data) => {
-      // data expected to be { players: { socketId: name, ... }, ... }
-      // Try to preserve roomCode if it's not included in the payload
-      let roomCode =
-        data.roomCode ||
-        JSON.parse(sessionStorage.getItem("currentRoom") || "null")?.roomCode;
-      if (!roomCode) {
-        // nothing to do if we don't know the room code
-        return;
-      }
-
-      const updated = {
-        roomCode,
-        players: data.players,
-      };
-
-      try {
-        sessionStorage.setItem("currentRoom", JSON.stringify(updated));
-      } catch (e) {
-        // ignore storage errors
-      }
+        navigate("/lobby", {
+          state: response.data,
+        });
     });
 
     // cleanup on unmount
