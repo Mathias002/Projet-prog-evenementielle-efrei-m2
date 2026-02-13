@@ -204,7 +204,7 @@ io.on("connection", (socket) => {
 
     userRooms.get(sID).add(upperRoomCode);
 
-    // Enregistre le joueur sous son sessionID 
+    // Enregistre le joueur sous son sessionID
     room.players[socket.sessionID] = playerName;
 
     room.players[socket.sessionID].online = true;
@@ -294,11 +294,24 @@ io.on("connection", (socket) => {
     const userId = socket.sessionID;
 
     if (room && room.players[userId]) {
-
       delete room.players[userId];
       delete room.readyPlayers[userId];
 
       socket.leave(upperRoomCode);
+
+      if (room.hostId === sID) {
+        const remainingIds = Object.keys(room.players);
+        if (remainingIds.length > 0) {
+          // On nomme le premier joueur restant comme nouvel hôte
+          room.hostId = remainingIds[0];
+          log("INFO", `Nouvel hôte pour ${roomCode} : ${room.hostId}`);
+        } else {
+          // Si plus personne on supprime la room
+          delete rooms[roomCode];
+          log("INFO", `Room ${roomCode} supprimée (vide)`);
+          return;
+        }
+      }
 
       io.to(upperRoomCode).emit("room_updated", {
         hostId: room.hostId,
@@ -323,7 +336,7 @@ io.on("connection", (socket) => {
     const timeout = setTimeout(() => {
       log("INFO", `🗑️ Suppression définitive de ${sID} (Délai écoulé)`);
 
-      // Met le joueur HORS LIGNE 
+      // Met le joueur HORS LIGNE
       if (userRooms.has(sID)) {
         userRooms.get(sID).forEach((roomCode) => {
           if (rooms[roomCode] && rooms[roomCode].players[sID]) {
@@ -385,7 +398,7 @@ io.on("connection", (socket) => {
     disconnectTimeouts.set(sID, timeout);
   });
 
-   // Route pour streamer l'audio
+  // Route pour streamer l'audio
   app.get("/blindtest/audio/stream/:id", (req, res) => {
     const musicId = req.params.id;
     const fileName = activeStreams.get(musicId);
@@ -621,6 +634,7 @@ io.on("connection", (socket) => {
     };
 
     io.to(upperRoomCode).emit("blindtest_countdown", { seconds: 5 });
+    log("INFO", "Début du compte à rebours pour le lancement du jeu");
 
     setTimeout(() => launchMusic(0), 5000);
   });

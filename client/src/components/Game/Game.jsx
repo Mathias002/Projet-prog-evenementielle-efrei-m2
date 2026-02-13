@@ -6,7 +6,7 @@ import "./Game.css";
 export default function Game() {
   const navigate = useNavigate();
   const { state: navState } = useLocation();
-  
+
   var myName = null;
 
   const [room] = useState(() => {
@@ -124,6 +124,8 @@ export default function Game() {
     };
 
     const onCountdown = (data) => {
+      console.log("Countdown");
+      console.log(data);
       setStartCountdown(data.seconds);
       const interval = setInterval(() => {
         setStartCountdown((prev) => {
